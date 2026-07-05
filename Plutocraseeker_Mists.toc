@@ -1,6 +1,8 @@
 ## Interface: 50504
 ## Interface-Mists: 50504
 ## Title: Plutocraseeker
+## Category: Equipment
+## IconTexture: Interface\AddOns\Plutocraseeker\assets\plutocraseeker-icon
 ## Notes: Tracks wanted loot across custom sets and alerts when matching raid links appear.
 ## Author: Sinaesthetic
 ## Version: 0.1.0

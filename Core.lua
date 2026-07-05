@@ -741,6 +741,9 @@ function Plutocraseeker.RebuildTargetNpcIndex()
                         bucket.sources[itemId] = bucket.sources[itemId] or {
                             instanceName = source.instanceName,
                             bossName = source.bossName,
+                            difficultyId = source.difficultyId,
+                            difficultyName = source.difficultyName,
+                            difficultyPrefix = source.difficultyPrefix,
                         }
                     end
                 end
@@ -1196,7 +1199,7 @@ local function InitializeTooltipHooks()
     HookTooltip(ItemRefTooltip)
 end
 
-local function BuildAlertMatch(itemId, link)
+local function BuildAlertMatch(itemId, link, source)
     if Plutocraseeker.PlayerHasItem(itemId) then
         return nil
     end
@@ -1207,10 +1210,26 @@ local function BuildAlertMatch(itemId, link)
     end
 
     local setText = JoinSetNames(matches)
+    local alertSource = source
+    if type(alertSource) ~= "table" then
+        alertSource = {}
+    end
+
+    if not alertSource.difficultyPrefix then
+        for _, set in ipairs(Plutocraseeker.db.sets or {}) do
+            local _, item = FindItem(set, itemId)
+            if item and item.difficultyPrefix then
+                alertSource.difficultyPrefix = item.difficultyPrefix
+                break
+            end
+        end
+    end
+
     return {
         itemId = itemId,
         itemText = link or Plutocraseeker.GetItemName(itemId),
         setText = setText,
+        source = alertSource,
         cooldownKey = tostring(itemId) .. ":" .. setText,
     }
 end
@@ -1241,7 +1260,7 @@ local function AlertForItems(items, context)
         local itemId = tonumber(item.itemId)
         if itemId and not seen[itemId] then
             seen[itemId] = true
-            local match = BuildAlertMatch(itemId, item.link)
+            local match = BuildAlertMatch(itemId, item.link, item.source)
             if match then
                 local lastAlert = Plutocraseeker.lastAlerts[match.cooldownKey]
                 if context.force or not lastAlert or now - lastAlert >= Plutocraseeker.alertCooldown then
@@ -1336,12 +1355,14 @@ local function ScanTargetForWantedLoot(options)
         for _, itemId in ipairs(itemIds) do
             items[#items + 1] = {
                 itemId = itemId,
+                source = bucket.sources and bucket.sources[itemId] or nil,
             }
         end
     else
         for itemId in pairs(bucket.items) do
             items[#items + 1] = {
                 itemId = itemId,
+                source = bucket.sources and bucket.sources[itemId] or nil,
             }
         end
     end

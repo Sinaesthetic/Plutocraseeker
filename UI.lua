@@ -13,9 +13,12 @@ local setRows = {}
 local itemRows = {}
 local itemOffset = 0
 local ScrollItems
+local RefreshAlertTooltipRows
 local TOOLTIP_HOVER_DELAY = 0.25
 local MAIN_FRAME_HEIGHT = 520
 local MAIN_PANEL_HEIGHT = 396
+local ALERT_MAX_HEIGHT = 420
+local ALERT_ITEM_VIEW_HEIGHT = 184
 local colors = {
     bg = { 0.055, 0.065, 0.075, 0.96 },
     panel = { 0.085, 0.095, 0.11, 0.96 },
@@ -166,6 +169,68 @@ local function CreateScrollBar(parent, height)
     return bar
 end
 
+local function SetAlertItemScroll(offset)
+    if not alertFrame or not alertFrame.itemScroll then
+        return
+    end
+
+    local maxScroll = alertFrame.itemMaxScroll or 0
+    offset = math.max(0, math.min(offset or 0, maxScroll))
+    alertFrame.itemScroll:SetVerticalScroll(offset)
+    alertFrame.itemScrollOffset = offset
+
+    local bar = alertFrame.itemScrollBar
+    if not bar then
+        return
+    end
+
+    if maxScroll <= 0 then
+        bar:Hide()
+        return
+    end
+
+    bar:Show()
+    bar.up.text:SetText(offset > 0 and "^" or "|cff3f4947^|r")
+    bar.down.text:SetText(offset < maxScroll and "v" or "|cff3f4947v|r")
+
+    local trackHeight = bar.height - 42
+    local contentHeight = alertFrame.itemContentHeight or ALERT_ITEM_VIEW_HEIGHT
+    local viewHeight = alertFrame.itemViewHeight or ALERT_ITEM_VIEW_HEIGHT
+    local thumbHeight = math.max(24, math.floor(trackHeight * (viewHeight / math.max(contentHeight, 1))))
+    local travel = math.max(trackHeight - thumbHeight, 1)
+    local y = -21 - math.floor(travel * (offset / math.max(maxScroll, 1)))
+
+    bar.thumb:SetHeight(thumbHeight)
+    bar.thumb:ClearAllPoints()
+    bar.thumb:SetPoint("TOP", bar, "TOP", 0, y)
+end
+
+local function CreateAlertScrollBar(parent, height)
+    local bar = CreateFrame("Frame", nil, parent, Template())
+    bar:SetSize(12, height)
+    bar.height = height
+    ApplyBackdrop(bar, { 0.045, 0.052, 0.06, 1 })
+
+    bar.up = CreateButton(bar, "^", 12, 18)
+    bar.up:SetPoint("TOP", 0, 0)
+    bar.up:SetScript("OnClick", function()
+        SetAlertItemScroll((alertFrame and alertFrame.itemScrollOffset or 0) - 24)
+    end)
+
+    bar.down = CreateButton(bar, "v", 12, 18)
+    bar.down:SetPoint("BOTTOM", 0, 0)
+    bar.down:SetScript("OnClick", function()
+        SetAlertItemScroll((alertFrame and alertFrame.itemScrollOffset or 0) + 24)
+    end)
+
+    bar.thumb = CreateFrame("Frame", nil, bar, Template())
+    bar.thumb:SetSize(8, 34)
+    ApplyBackdrop(bar.thumb, colors.selected)
+    bar:Hide()
+
+    return bar
+end
+
 local function CreateCheckbox(parent, text, width)
     local button = CreateFrame("Button", nil, parent, Template())
     button:SetSize(width or 300, 28)
@@ -275,10 +340,37 @@ local function CreateAlertFrame()
     alertFrame.context:SetPoint("TOPLEFT", alertFrame.title, "BOTTOMLEFT", 0, -10)
     alertFrame.context:SetWidth(390)
 
-    alertFrame.items = CreateText(alertFrame, "", 13, colors.text)
-    alertFrame.items:SetPoint("TOPLEFT", alertFrame.context, "BOTTOMLEFT", 0, -12)
-    alertFrame.items:SetWidth(450)
-    alertFrame.items:SetJustifyH("LEFT")
+    alertFrame.motivation = CreateText(alertFrame, "This mob possesses wealth that you wish to acquire.", 12, { 1.0, 0.82, 0.18, 1 })
+    alertFrame.motivation:SetPoint("TOPLEFT", alertFrame.title, "BOTTOMLEFT", 0, -10)
+    alertFrame.motivation:SetWidth(450)
+    alertFrame.motivation:Hide()
+
+    alertFrame.earnIt = CreateText(alertFrame, "GO EARN IT!", 13, { 1.0, 0.82, 0.18, 1 })
+    alertFrame.earnIt:SetPoint("TOPLEFT", alertFrame.motivation, "BOTTOMLEFT", 0, -2)
+    alertFrame.earnIt:SetWidth(110)
+    alertFrame.earnIt:Hide()
+
+    alertFrame.earnItPulse = alertFrame.earnIt:CreateAnimationGroup()
+    alertFrame.earnItPulse:SetLooping("BOUNCE")
+    alertFrame.earnItPulse.fade = alertFrame.earnItPulse:CreateAnimation("Alpha")
+    alertFrame.earnItPulse.fade:SetFromAlpha(1)
+    alertFrame.earnItPulse.fade:SetToAlpha(0.35)
+    alertFrame.earnItPulse.fade:SetDuration(0.55)
+
+    alertFrame.itemScroll = CreateFrame("ScrollFrame", nil, alertFrame)
+    alertFrame.itemScroll:SetPoint("TOPLEFT", alertFrame.context, "BOTTOMLEFT", 0, -12)
+    alertFrame.itemScroll:SetSize(450, ALERT_ITEM_VIEW_HEIGHT)
+    alertFrame.itemScroll:EnableMouseWheel(true)
+    alertFrame.itemScroll:SetScript("OnMouseWheel", function(_, delta)
+        SetAlertItemScroll((alertFrame.itemScrollOffset or 0) - (delta * 24))
+    end)
+
+    alertFrame.itemScrollChild = CreateFrame("Frame", nil, alertFrame.itemScroll)
+    alertFrame.itemScrollChild:SetSize(450, 1)
+    alertFrame.itemScroll:SetScrollChild(alertFrame.itemScrollChild)
+
+    alertFrame.itemScrollBar = CreateAlertScrollBar(alertFrame, ALERT_ITEM_VIEW_HEIGHT)
+    alertFrame.itemScrollBar:SetPoint("TOPLEFT", alertFrame.itemScroll, "TOPRIGHT", 6, 0)
 
     alertFrame.close = CreateButton(alertFrame, "X", 28, 26)
     alertFrame.close:SetPoint("TOPRIGHT", -12, -12)
@@ -293,12 +385,95 @@ local function CreateAlertFrame()
     end)
 end
 
-local function BuildAlertLines(matches)
-    local lines = {}
-    for index, match in ipairs(matches or {}) do
-        lines[index] = tostring(match.itemText or "Tracked item") .. " |cff9aa4a1(" .. tostring(match.setText or "Unknown set") .. ")|r"
+local function BuildAlertLine(match)
+    return tostring(match.itemText or "Tracked item") .. " |cff9aa4a1(" .. tostring(match.setText or "Unknown set") .. ")|r"
+end
+
+local function IsHeroicAlertMatch(match)
+    local source = match and match.source
+    local difficultyText = ""
+    local difficultyPrefix = ""
+    if type(source) == "table" then
+        difficultyText = tostring(source.difficultyName or "")
+        difficultyPrefix = tostring(source.difficultyPrefix or "")
     end
-    return table.concat(lines, "\n")
+    if difficultyPrefix == "H" then
+        return true
+    end
+    return difficultyText:lower():find("heroic", 1, true) and true or false
+end
+
+local function BuildGroupedTargetAlertLines(matches)
+    local normal = {}
+    local heroic = {}
+
+    for _, match in ipairs(matches or {}) do
+        local target = IsHeroicAlertMatch(match) and heroic or normal
+        target[#target + 1] = match
+    end
+
+    local lines = {}
+    local lineData = {}
+    lines[#lines + 1] = "|cff6ee7b7Normal|r"
+    lineData[#lineData + 1] = {
+        text = lines[#lines],
+    }
+    if #normal == 0 then
+        lines[#lines + 1] = "|cff9aa4a1None|r"
+        lineData[#lineData + 1] = {
+            text = lines[#lines],
+        }
+    else
+        for _, match in ipairs(normal) do
+            lines[#lines + 1] = BuildAlertLine(match)
+            lineData[#lineData + 1] = {
+                text = lines[#lines],
+                itemId = match.itemId,
+            }
+        end
+    end
+
+    lines[#lines + 1] = ""
+    lineData[#lineData + 1] = {
+        text = lines[#lines],
+    }
+    lines[#lines + 1] = "|cff6ee7b7Heroic|r"
+    lineData[#lineData + 1] = {
+        text = lines[#lines],
+    }
+    if #heroic == 0 then
+        lines[#lines + 1] = "|cff9aa4a1None|r"
+        lineData[#lineData + 1] = {
+            text = lines[#lines],
+        }
+    else
+        for _, match in ipairs(heroic) do
+            lines[#lines + 1] = BuildAlertLine(match)
+            lineData[#lineData + 1] = {
+                text = lines[#lines],
+                itemId = match.itemId,
+            }
+        end
+    end
+
+    return table.concat(lines, "\n"), #lines, lineData
+end
+
+local function BuildAlertLines(matches, context)
+    if context and context.source == "target" then
+        return BuildGroupedTargetAlertLines(matches)
+    end
+
+    local lines = {}
+    local lineData = {}
+    for index, match in ipairs(matches or {}) do
+        lines[index] = BuildAlertLine(match)
+        lineData[index] = {
+            text = lines[index],
+            itemId = match.itemId,
+        }
+    end
+    return table.concat(lines, "\n"), #lines, lineData
 end
 
 function UI.ShowLootAlert(matchesOrItemText, setTextOrContext, sender)
@@ -332,8 +507,47 @@ function UI.ShowLootAlert(matchesOrItemText, setTextOrContext, sender)
         alertFrame.context:SetText("Wanted item matched")
     end
 
-    alertFrame.items:SetText(BuildAlertLines(matches))
-    alertFrame:SetHeight(math.min(160 + (#matches * 20), 420))
+    alertFrame.itemScroll:ClearAllPoints()
+    if context.source == "target" then
+        alertFrame.motivation:Show()
+        alertFrame.earnIt:SetAlpha(1)
+        alertFrame.earnIt:Show()
+        if alertFrame.earnItPulse then
+            alertFrame.earnItPulse:Play()
+        end
+        alertFrame.context:ClearAllPoints()
+        alertFrame.context:SetPoint("TOPLEFT", alertFrame.earnIt, "BOTTOMLEFT", 0, -8)
+        alertFrame.itemScroll:SetPoint("TOPLEFT", alertFrame.context, "BOTTOMLEFT", 0, -12)
+    else
+        if alertFrame.earnItPulse then
+            alertFrame.earnItPulse:Stop()
+        end
+        alertFrame.earnIt:SetAlpha(1)
+        alertFrame.earnIt:Hide()
+        alertFrame.motivation:Hide()
+        alertFrame.context:ClearAllPoints()
+        alertFrame.context:SetPoint("TOPLEFT", alertFrame.title, "BOTTOMLEFT", 0, -10)
+        alertFrame.itemScroll:SetPoint("TOPLEFT", alertFrame.context, "BOTTOMLEFT", 0, -12)
+    end
+
+    local _, lineCount, lineData = BuildAlertLines(matches, context)
+    local lineHeight = 20
+    local contentHeight = math.max((lineCount or #matches) * lineHeight, 1)
+    local viewHeight = math.min(contentHeight, ALERT_ITEM_VIEW_HEIGHT)
+    alertFrame.itemContentHeight = contentHeight
+    alertFrame.itemViewHeight = viewHeight
+    alertFrame.itemMaxScroll = math.max(contentHeight - viewHeight, 0)
+    alertFrame.itemScroll:SetSize(450, viewHeight)
+    alertFrame.itemScrollChild:SetSize(450, contentHeight)
+    alertFrame.itemScrollBar:SetHeight(viewHeight)
+    alertFrame.itemScrollBar.height = viewHeight
+    SetAlertItemScroll(0)
+    if RefreshAlertTooltipRows then
+        RefreshAlertTooltipRows(lineData, lineHeight)
+    end
+
+    local extraHeight = context.source == "target" and 42 or 0
+    alertFrame:SetHeight(math.min(160 + extraHeight + viewHeight, ALERT_MAX_HEIGHT))
     alertFrame:Show()
     PlayAlertSound()
 end
@@ -418,6 +632,64 @@ local function ScheduleItemTooltip(row)
         end)
     else
         ShowItemTooltip(row)
+    end
+end
+
+RefreshAlertTooltipRows = function(lineData, lineHeight)
+    if not alertFrame or not alertFrame.itemScrollChild then
+        return
+    end
+
+    alertFrame.alertTooltipRows = alertFrame.alertTooltipRows or {}
+    lineHeight = lineHeight or 20
+    lineData = lineData or {}
+    HideItemTooltip()
+
+    for index, data in ipairs(lineData) do
+        local row = alertFrame.alertTooltipRows[index]
+        if not row then
+            row = CreateFrame("Button", nil, alertFrame.itemScrollChild)
+            row:SetSize(430, lineHeight)
+            row:EnableMouse(true)
+            row:EnableMouseWheel(true)
+            row.text = CreateText(row, "", 13, colors.text)
+            row.text:SetPoint("LEFT", 0, 0)
+            row.text:SetWidth(430)
+            row:SetScript("OnEnter", function(self)
+                if self.itemId then
+                    ScheduleItemTooltip(self)
+                end
+            end)
+            row:SetScript("OnLeave", function()
+                HideItemTooltip()
+            end)
+            row:SetScript("OnMouseWheel", function(_, delta)
+                SetAlertItemScroll((alertFrame.itemScrollOffset or 0) - (delta * 24))
+            end)
+            alertFrame.alertTooltipRows[index] = row
+        end
+
+        row.itemId = tonumber(data and data.itemId)
+        row.pendingTooltipItemId = nil
+        row.text:SetText(tostring(data and data.text or ""))
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", alertFrame.itemScrollChild, "TOPLEFT", 0, -((index - 1) * lineHeight))
+        row:SetHeight(lineHeight)
+        if data then
+            row:Show()
+        else
+            row:Hide()
+        end
+    end
+
+    for index = #lineData + 1, #alertFrame.alertTooltipRows do
+        local row = alertFrame.alertTooltipRows[index]
+        row.itemId = nil
+        row.pendingTooltipItemId = nil
+        if row.text then
+            row.text:SetText("")
+        end
+        row:Hide()
     end
 end
 
