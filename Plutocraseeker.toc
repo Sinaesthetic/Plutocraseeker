@@ -1,0 +1,12 @@
+## Interface: 50504
+## Interface-Mists: 50504
+## Title: Plutocraseeker
+## Notes: Tracks wanted loot across custom sets and alerts when matching raid links appear.
+## Author: Sinaesthetic
+## Version: 0.1.0
+## SavedVariables: PlutocraseekerDB
+## OptionalDeps: AtlasLootClassic, AtlasLootClassic_DungeonsAndRaids
+
+Core.lua
+UI.lua
+AtlasBrowser.lua

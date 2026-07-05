@@ -1,0 +1,44 @@
+# ------------------------------
+# OS-generated files
+# ------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ------------------------------
+# Editor / IDE
+# ------------------------------
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.swp
+*.swo
+*~
+
+# ------------------------------
+# Lua / tooling cache
+# ------------------------------
+luac.out
+*.luac
+
+# ------------------------------
+# WoW addon packaging artifacts
+# ------------------------------
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+*.tgz
+release/
+dist/
+build/
+
+# ------------------------------
+# Logs
+# ------------------------------
+*.log
