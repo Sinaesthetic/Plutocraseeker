@@ -6,6 +6,7 @@ local UI = Plutocraseeker.UI
 local mainFrame
 local configFrame
 local alertFrame
+local anchorOverlay
 local importFrame
 local wowheadImportFrame
 local confirmDeleteFrame
@@ -19,6 +20,7 @@ local MAIN_FRAME_HEIGHT = 520
 local MAIN_PANEL_HEIGHT = 396
 local ALERT_MAX_HEIGHT = 420
 local ALERT_ITEM_VIEW_HEIGHT = 184
+local ALERT_DEFAULT_TOP_OFFSET = -180
 local colors = {
     bg = { 0.055, 0.065, 0.075, 0.96 },
     panel = { 0.085, 0.095, 0.11, 0.96 },
@@ -319,13 +321,68 @@ local function PlayAlertSound()
     end
 end
 
+local function GetAlertAnchorConfig()
+    if not Plutocraseeker.db then
+        return nil
+    end
+
+    Plutocraseeker.db.config = Plutocraseeker.db.config or {}
+    Plutocraseeker.db.config.alertAnchor = Plutocraseeker.db.config.alertAnchor or {}
+    return Plutocraseeker.db.config.alertAnchor
+end
+
+local function ApplyAlertAnchor(frame)
+    if not frame then
+        return
+    end
+
+    frame:ClearAllPoints()
+    local anchor = GetAlertAnchorConfig()
+    if anchor and anchor.x and anchor.y then
+        frame:SetPoint("CENTER", UIParent, "CENTER", anchor.x, anchor.y)
+    else
+        frame:SetPoint("TOP", UIParent, "TOP", 0, ALERT_DEFAULT_TOP_OFFSET)
+    end
+end
+
+local function SaveAlertAnchorFromFrame(frame)
+    local anchor = GetAlertAnchorConfig()
+    if not anchor or not frame then
+        return
+    end
+
+    local frameCenterX, frameCenterY = frame:GetCenter()
+    local uiCenterX, uiCenterY = UIParent:GetCenter()
+    if not frameCenterX or not frameCenterY or not uiCenterX or not uiCenterY then
+        return
+    end
+
+    anchor.x = math.floor((frameCenterX - uiCenterX) + 0.5)
+    anchor.y = math.floor((frameCenterY - uiCenterY) + 0.5)
+end
+
+local function ResetAlertAnchor()
+    local anchor = GetAlertAnchorConfig()
+    if anchor then
+        anchor.x = nil
+        anchor.y = nil
+    end
+
+    if alertFrame then
+        ApplyAlertAnchor(alertFrame)
+    end
+end
+
 local function CreateAlertFrame()
     alertFrame = CreateFrame("Frame", "PlutocraseekerLootAlertFrame", UIParent, Template())
     alertFrame:SetSize(500, 220)
-    alertFrame:SetPoint("TOP", UIParent, "TOP", 0, -180)
+    ApplyAlertAnchor(alertFrame)
     alertFrame:SetFrameStrata("FULLSCREEN_DIALOG")
     alertFrame:EnableMouse(true)
     alertFrame:SetMovable(true)
+    if alertFrame.SetClampedToScreen then
+        alertFrame:SetClampedToScreen(true)
+    end
     alertFrame:RegisterForDrag("LeftButton")
     alertFrame:SetScript("OnDragStart", alertFrame.StartMoving)
     alertFrame:SetScript("OnDragStop", alertFrame.StopMovingOrSizing)
@@ -548,6 +605,7 @@ function UI.ShowLootAlert(matchesOrItemText, setTextOrContext, sender)
 
     local extraHeight = context.source == "target" and 42 or 0
     alertFrame:SetHeight(math.min(160 + extraHeight + viewHeight, ALERT_MAX_HEIGHT))
+    ApplyAlertAnchor(alertFrame)
     alertFrame:Show()
     PlayAlertSound()
 end
@@ -848,6 +906,127 @@ local function ShowTargetLootOptionTooltip(owner)
     GameTooltip:AddLine("Show coveted loot on boss target", 0.31, 0.82, 0.62)
     GameTooltip:AddLine("When you target a boss outside combat, Plutocraseeker checks known AtlasLoot sources for items on your monitored sets.", 0.9, 0.95, 0.93, true)
     GameTooltip:Show()
+end
+
+local function ShowAnchorOptionTooltip(owner)
+    GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
+    GameTooltip:AddLine("Show anchors", 0.31, 0.82, 0.62)
+    GameTooltip:AddLine("Move the loot alert anchor to choose where Plutocraseeker alerts appear.", 0.9, 0.95, 0.93, true)
+    GameTooltip:Show()
+end
+
+local function PositionAnchorPreview()
+    if not anchorOverlay or not anchorOverlay.anchor then
+        return
+    end
+
+    ApplyAlertAnchor(anchorOverlay.anchor)
+end
+
+local function CreateAnchorGrid(parent)
+    local spacing = 80
+    parent.gridLines = parent.gridLines or {}
+
+    for index = -30, 30 do
+        local vertical = parent:CreateTexture(nil, "BORDER")
+        vertical:SetColorTexture(0.31, 0.82, 0.62, index == 0 and 0.32 or 0.16)
+        vertical:SetSize(index == 0 and 2 or 1, 5000)
+        vertical:SetPoint("CENTER", parent, "CENTER", index * spacing, 0)
+        parent.gridLines[#parent.gridLines + 1] = vertical
+
+        local horizontal = parent:CreateTexture(nil, "BORDER")
+        horizontal:SetColorTexture(0.31, 0.82, 0.62, index == 0 and 0.32 or 0.16)
+        horizontal:SetSize(5000, index == 0 and 2 or 1)
+        horizontal:SetPoint("CENTER", parent, "CENTER", 0, index * spacing)
+        parent.gridLines[#parent.gridLines + 1] = horizontal
+    end
+end
+
+local function CreateAnchorOverlay()
+    anchorOverlay = CreateFrame("Frame", "PlutocraseekerAnchorOverlay", UIParent, Template())
+    anchorOverlay:SetAllPoints(UIParent)
+    anchorOverlay:SetFrameStrata("FULLSCREEN_DIALOG")
+    anchorOverlay:SetFrameLevel(250)
+    anchorOverlay:EnableMouse(true)
+    anchorOverlay:Hide()
+    RegisterEscapeFrame("PlutocraseekerAnchorOverlay")
+
+    anchorOverlay.dim = anchorOverlay:CreateTexture(nil, "BACKGROUND")
+    anchorOverlay.dim:SetAllPoints(anchorOverlay)
+    anchorOverlay.dim:SetColorTexture(0, 0, 0, 0.72)
+    CreateAnchorGrid(anchorOverlay)
+
+    anchorOverlay.title = CreateText(anchorOverlay, "Plutocraseeker Anchors", 18, colors.accent)
+    anchorOverlay.title:SetPoint("TOP", UIParent, "TOP", 0, -36)
+
+    anchorOverlay.hint = CreateText(anchorOverlay, "Drag the loot alert anchor. Click Done when it feels right.", 12, colors.text)
+    anchorOverlay.hint:SetPoint("TOP", anchorOverlay.title, "BOTTOM", 0, -8)
+    anchorOverlay.hint:SetWidth(520)
+    anchorOverlay.hint:SetJustifyH("CENTER")
+
+    anchorOverlay.anchor = CreateFrame("Frame", nil, anchorOverlay, Template())
+    anchorOverlay.anchor:SetSize(500, 150)
+    anchorOverlay.anchor:SetFrameLevel(anchorOverlay:GetFrameLevel() + 5)
+    anchorOverlay.anchor:EnableMouse(true)
+    anchorOverlay.anchor:SetMovable(true)
+    if anchorOverlay.anchor.SetClampedToScreen then
+        anchorOverlay.anchor:SetClampedToScreen(true)
+    end
+    anchorOverlay.anchor:RegisterForDrag("LeftButton")
+    ApplyBackdrop(anchorOverlay.anchor, { 0.055, 0.065, 0.075, 0.82 })
+
+    anchorOverlay.anchor.title = CreateText(anchorOverlay.anchor, "Loot Alert Anchor", 16, colors.accent)
+    anchorOverlay.anchor.title:SetPoint("TOPLEFT", 16, -14)
+
+    anchorOverlay.anchor.body = CreateText(anchorOverlay.anchor, "Future loot alerts will appear here.", 12, colors.text)
+    anchorOverlay.anchor.body:SetPoint("TOPLEFT", anchorOverlay.anchor.title, "BOTTOMLEFT", 0, -10)
+    anchorOverlay.anchor.body:SetWidth(460)
+
+    anchorOverlay.anchor.dragHint = CreateText(anchorOverlay.anchor, "Drag me", 11, { 1.0, 0.82, 0.18, 1 })
+    anchorOverlay.anchor.dragHint:SetPoint("BOTTOMLEFT", 16, 14)
+
+    anchorOverlay.anchor:SetScript("OnDragStart", function(self)
+        self:StartMoving()
+    end)
+    anchorOverlay.anchor:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        SaveAlertAnchorFromFrame(self)
+        if alertFrame then
+            ApplyAlertAnchor(alertFrame)
+        end
+    end)
+
+    anchorOverlay.done = CreateButton(anchorOverlay.anchor, "Done", 82, 30)
+    anchorOverlay.done:SetPoint("BOTTOMRIGHT", -14, 12)
+    anchorOverlay.done:SetScript("OnClick", function()
+        anchorOverlay:Hide()
+    end)
+
+    anchorOverlay.reset = CreateButton(anchorOverlay.anchor, "Reset", 82, 30)
+    anchorOverlay.reset:SetPoint("RIGHT", anchorOverlay.done, "LEFT", -12, 0)
+    anchorOverlay.reset:SetScript("OnClick", function()
+        ResetAlertAnchor()
+        PositionAnchorPreview()
+    end)
+
+    anchorOverlay.close = CreateButton(anchorOverlay, "X", 28, 26)
+    anchorOverlay.close:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -18, -18)
+    anchorOverlay.close:SetScript("OnClick", function()
+        anchorOverlay:Hide()
+    end)
+
+    anchorOverlay:SetScript("OnShow", function()
+        PositionAnchorPreview()
+    end)
+end
+
+local function ShowAnchorOverlay()
+    if not anchorOverlay then
+        CreateAnchorOverlay()
+    end
+
+    anchorOverlay:Show()
+    PositionAnchorPreview()
 end
 
 local function CreateImportFrame()
@@ -1305,7 +1484,7 @@ end
 
 local function CreateConfigPanel()
     configFrame = CreateFrame("Frame", "PlutocraseekerConfigFrame", UIParent, Template())
-    configFrame:SetSize(470, 270)
+    configFrame:SetSize(470, 310)
     configFrame:SetPoint("CENTER")
     configFrame:SetFrameStrata("FULLSCREEN_DIALOG")
     configFrame:SetFrameLevel(100)
@@ -1332,7 +1511,7 @@ local function CreateConfigPanel()
 
     local alertsSection = CreateFrame("Frame", nil, configFrame, Template())
     alertsSection:SetPoint("TOPLEFT", 16, -58)
-    alertsSection:SetSize(438, 180)
+    alertsSection:SetSize(438, 220)
     ApplyBackdrop(alertsSection, colors.panel)
 
     alertsSection.title = CreateText(alertsSection, "Loot Alerts", 13, colors.accent)
@@ -1378,6 +1557,18 @@ local function CreateConfigPanel()
     configFrame.showTargetLootAlerts:SetScript("OnLeave", function(self)
         self.text:SetTextColor(unpack(colors.text))
         GameTooltip:Hide()
+    end)
+
+    configFrame.showAnchors = CreateButton(alertsSection, "Show Anchors", 112, 28)
+    configFrame.showAnchors:SetPoint("TOPLEFT", configFrame.showTargetLootAlerts, "BOTTOMLEFT", 26, -12)
+    configFrame.showAnchors:SetScript("OnEnter", function(self)
+        ShowAnchorOptionTooltip(self)
+    end)
+    configFrame.showAnchors:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    configFrame.showAnchors:SetScript("OnClick", function()
+        ShowAnchorOverlay()
     end)
 
     configFrame:SetScript("OnShow", function()

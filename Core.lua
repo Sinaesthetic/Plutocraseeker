@@ -22,6 +22,7 @@ local DEFAULT_DB = {
         alertOnMention = true,
         onlyLootMasterAlerts = true,
         showTargetLootAlerts = true,
+        alertAnchor = {},
     },
 }
 
