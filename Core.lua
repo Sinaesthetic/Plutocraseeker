@@ -1363,6 +1363,7 @@ local function AlertForItems(items, context)
     local sender = context.sender
     local senderText = sender and sender ~= "" and (" from " .. sender) or ""
     local sourceText = context.source == "loot" and " found in loot window"
+        or (context.source == "roll" and " available to roll")
         or (context.source == "target" and (" from " .. tostring(context.bossName or context.targetName or "target")))
         or senderText
     local message
@@ -1547,6 +1548,27 @@ local function ScanLootWindow()
     })
 end
 
+local function ScanLootRoll(rollId)
+    if not rollId or not GetLootRollItemLink then
+        return
+    end
+
+    local link = GetLootRollItemLink(rollId)
+    local itemId = GetItemIdFromLinkOrText(link)
+    if not itemId then
+        return
+    end
+
+    AlertForItems({
+        {
+            itemId = itemId,
+            link = link,
+        },
+    }, {
+        source = "roll",
+    })
+end
+
 function Plutocraseeker.RefreshUI()
     if Plutocraseeker.UI and Plutocraseeker.UI.Refresh then
         Plutocraseeker.UI.Refresh()
@@ -1638,6 +1660,7 @@ eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 eventFrame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
 eventFrame:RegisterEvent("LOOT_OPENED")
 eventFrame:RegisterEvent("CHAT_MSG_LOOT")
+eventFrame:RegisterEvent("START_LOOT_ROLL")
 eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 
 eventFrame:SetScript("OnEvent", function(_, event, ...)
@@ -1667,6 +1690,17 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         ScanLootWindow()
         if C_Timer and C_Timer.After then
             C_Timer.After(0.1, ScanLootWindow)
+        end
+        return
+    end
+
+    if event == "START_LOOT_ROLL" then
+        local rollId = ...
+        ScanLootRoll(rollId)
+        if C_Timer and C_Timer.After then
+            C_Timer.After(0.1, function()
+                ScanLootRoll(rollId)
+            end)
         end
         return
     end
@@ -1797,6 +1831,29 @@ local function TestItemLinkedAlert()
     })
 end
 
+local function TestLootRollAlert()
+    if not Plutocraseeker.UI or not Plutocraseeker.UI.ShowLootAlert then
+        Print("UI is not loaded.")
+        return
+    end
+
+    local itemId, item = FindTestWatchedItem()
+    if not itemId then
+        Print("Add at least one enabled watched item before testing loot-roll alerts.")
+        return
+    end
+
+    local match = BuildAlertMatch(itemId, Plutocraseeker.GetItemName(itemId), item and item.source)
+    if not match then
+        Print("The test item is not in any enabled watched set.")
+        return
+    end
+
+    Plutocraseeker.UI.ShowLootAlert({ match }, {
+        source = "roll",
+    })
+end
+
 SlashCmdList.PLUTOCRASEEKER = function(input)
     local command, rest = tostring(input or ""):match("^%s*(%S*)%s*(.-)%s*$")
     command = command and command:lower() or ""
@@ -1824,8 +1881,10 @@ SlashCmdList.PLUTOCRASEEKER = function(input)
             TestLootAlert()
         elseif testName == "item_linked" then
             TestItemLinkedAlert()
+        elseif testName == "loot_roll" then
+            TestLootRollAlert()
         else
-            Print("Unknown test. Try /ps test loot_alert, /ps test item_linked, or /ps test item_received.")
+            Print("Unknown test. Try /ps test loot_alert, /ps test item_linked, /ps test loot_roll, or /ps test item_received.")
         end
     else
         Plutocraseeker.ToggleUI()

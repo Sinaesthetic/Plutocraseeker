@@ -351,6 +351,37 @@ local function ApplyAlertAnchor(frame)
     end
 end
 
+local function GetAlertMatchKey(match)
+    if not match then
+        return nil
+    end
+    return match.cooldownKey or (tostring(match.itemId or "") .. ":" .. tostring(match.setText or ""))
+end
+
+local function IsAlertKeyVisible(key)
+    if not key or key == ":" then
+        return false
+    end
+    if alertFrame and alertFrame:IsShown() and alertFrame.alertKeys and alertFrame.alertKeys[key] then
+        return true
+    end
+    if mentionAlertFrame and mentionAlertFrame:IsShown() and mentionAlertFrame.alertKeys and mentionAlertFrame.alertKeys[key] then
+        return true
+    end
+    return false
+end
+
+local function FilterVisibleAlertMatches(matches)
+    local filtered = {}
+    for _, match in ipairs(matches or {}) do
+        local key = GetAlertMatchKey(match)
+        if not IsAlertKeyVisible(key) then
+            filtered[#filtered + 1] = match
+        end
+    end
+    return filtered
+end
+
 local function PositionAlertStack()
     local previousFrame
 
@@ -419,7 +450,8 @@ local function CreateAlertFrame(frameName)
     frame:SetScript("OnDragStart", frame.StartMoving)
     frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
     frame:Hide()
-    frame:SetScript("OnHide", function()
+    frame:SetScript("OnHide", function(self)
+        self.alertKeys = nil
         PositionAlertStack()
     end)
     ApplyBackdrop(frame, colors.bg)
@@ -587,6 +619,11 @@ function UI.ShowLootAlert(matchesOrItemText, setTextOrContext, sender)
         context.source = sender and "chat" or "loot"
     end
 
+    matches = FilterVisibleAlertMatches(matches)
+    if #matches == 0 then
+        return
+    end
+
     local frame
     if context.source == "chat" then
         if not mentionAlertFrame then
@@ -602,6 +639,8 @@ function UI.ShowLootAlert(matchesOrItemText, setTextOrContext, sender)
 
     if context.source == "loot" then
         frame.context:SetText("Found in loot window")
+    elseif context.source == "roll" then
+        frame.context:SetText("Available to roll")
     elseif context.source == "target" then
         frame.context:SetText("Targeted: " .. tostring(context.bossName or context.targetName or "tracked boss"))
     elseif context.sender and context.sender ~= "" then
@@ -647,6 +686,14 @@ function UI.ShowLootAlert(matchesOrItemText, setTextOrContext, sender)
     SetAlertItemScroll(frame, 0)
     if RefreshAlertTooltipRows then
         RefreshAlertTooltipRows(frame, lineData, lineHeight)
+    end
+
+    frame.alertKeys = {}
+    for _, match in ipairs(matches) do
+        local key = GetAlertMatchKey(match)
+        if key then
+            frame.alertKeys[key] = true
+        end
     end
 
     local extraHeight = context.source == "target" and 42 or 0
