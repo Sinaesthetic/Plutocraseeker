@@ -10,20 +10,32 @@ Plutocraseeker.playerInventoryCache = nil
 Plutocraseeker.tooltipStatusCache = {}
 Plutocraseeker.playerItemCacheTTL = 1.5
 
-local DEFAULT_DB = {
-    sets = {},
-    selectedSetId = nil,
-    nextSetId = 1,
+local ACCOUNT_DEFAULT_DB = {
     minimap = {},
     starredSources = {},
     itemSearchIndex = {},
-    targetNpcIndex = {},
     config = {
         alertOnMention = true,
         onlyLootMasterAlerts = true,
         showTargetLootAlerts = true,
         alertAnchor = {},
     },
+}
+
+local CHARACTER_DEFAULT_DB = {
+    sets = {},
+    selectedSetId = nil,
+    nextSetId = 1,
+    targetNpcIndex = {},
+    migratedFromAccount = false,
+}
+
+local CHARACTER_DB_KEYS = {
+    sets = true,
+    selectedSetId = true,
+    nextSetId = true,
+    targetNpcIndex = true,
+    migratedFromAccount = true,
 }
 
 local function CopyDefaults(target, defaults)
@@ -37,6 +49,42 @@ local function CopyDefaults(target, defaults)
             target[key] = value
         end
     end
+end
+
+local function CloneSavedValue(value, seen)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    seen = seen or {}
+    if seen[value] then
+        return seen[value]
+    end
+
+    local clone = {}
+    seen[value] = clone
+    for key, child in pairs(value) do
+        clone[CloneSavedValue(key, seen)] = CloneSavedValue(child, seen)
+    end
+    return clone
+end
+
+local function CreateRuntimeDB(accountDB, characterDB)
+    return setmetatable({}, {
+        __index = function(_, key)
+            if CHARACTER_DB_KEYS[key] then
+                return characterDB[key]
+            end
+            return accountDB[key]
+        end,
+        __newindex = function(_, key, value)
+            if CHARACTER_DB_KEYS[key] then
+                characterDB[key] = value
+            else
+                accountDB[key] = value
+            end
+        end,
+    })
 end
 
 local function Print(message)
@@ -448,8 +496,25 @@ local function EnsureDB()
     end
 
     PlutocraseekerDB = PlutocraseekerDB or {}
-    CopyDefaults(PlutocraseekerDB, DEFAULT_DB)
-    Plutocraseeker.db = PlutocraseekerDB
+    PlutocraseekerCharacterDB = PlutocraseekerCharacterDB or {}
+    CopyDefaults(PlutocraseekerDB, ACCOUNT_DEFAULT_DB)
+    CopyDefaults(PlutocraseekerCharacterDB, CHARACTER_DEFAULT_DB)
+
+    if not PlutocraseekerCharacterDB.migratedFromAccount then
+        if type(PlutocraseekerCharacterDB.sets) ~= "table" or #PlutocraseekerCharacterDB.sets == 0 then
+            if type(PlutocraseekerDB.sets) == "table" and #PlutocraseekerDB.sets > 0 then
+                PlutocraseekerCharacterDB.sets = CloneSavedValue(PlutocraseekerDB.sets)
+                PlutocraseekerCharacterDB.selectedSetId = PlutocraseekerDB.selectedSetId
+                PlutocraseekerCharacterDB.nextSetId = PlutocraseekerDB.nextSetId
+                PlutocraseekerCharacterDB.targetNpcIndex = {}
+            end
+        end
+        PlutocraseekerCharacterDB.migratedFromAccount = true
+    end
+
+    Plutocraseeker.accountDB = PlutocraseekerDB
+    Plutocraseeker.characterDB = PlutocraseekerCharacterDB
+    Plutocraseeker.db = CreateRuntimeDB(PlutocraseekerDB, PlutocraseekerCharacterDB)
 
     if #Plutocraseeker.db.sets == 0 then
         Plutocraseeker.CreateSet("Default")
@@ -937,14 +1002,37 @@ function Plutocraseeker.RemoveItemFromSelectedSet(itemId)
     end
 end
 
-function Plutocraseeker.GetMatchingSets(itemId)
+function Plutocraseeker.RemoveItemFromSet(setId, itemId)
+    local set = Plutocraseeker.GetSet(setId)
+    local index = FindItem(set, tonumber(itemId))
+    if not index then
+        return false
+    end
+
+    table.remove(set.items, index)
+    Plutocraseeker.RebuildTargetNpcIndex()
+    Plutocraseeker.ClearTooltipStatusCache()
+    Plutocraseeker.RefreshUI()
+    return true
+end
+
+function Plutocraseeker.GetSetsContainingItem(itemId, enabledOnly)
     local matches = {}
-    for _, set in ipairs(Plutocraseeker.db.sets) do
-        if set.enabled and FindItem(set, itemId) then
-            table.insert(matches, set)
+    itemId = tonumber(itemId)
+    if not itemId or not Plutocraseeker.db then
+        return matches
+    end
+
+    for _, set in ipairs(Plutocraseeker.db.sets or {}) do
+        if (not enabledOnly or set.enabled) and FindItem(set, itemId) then
+            matches[#matches + 1] = set
         end
     end
     return matches
+end
+
+function Plutocraseeker.GetMatchingSets(itemId)
+    return Plutocraseeker.GetSetsContainingItem(itemId, true)
 end
 
 local function GetBagItemId(bag, slot)
@@ -1201,10 +1289,6 @@ local function InitializeTooltipHooks()
 end
 
 local function BuildAlertMatch(itemId, link, source)
-    if Plutocraseeker.PlayerHasItem(itemId) then
-        return nil
-    end
-
     local matches = Plutocraseeker.GetMatchingSets(itemId)
     if #matches == 0 then
         return nil
@@ -1415,6 +1499,32 @@ local function ScanChatMessage(message, sender)
     })
 end
 
+local function IsSelfLootMessage(message)
+    local lower = tostring(message or ""):lower()
+    return lower:find("you receive", 1, true)
+        or lower:find("you won", 1, true)
+        or lower:find("you create", 1, true)
+end
+
+local function PromptForReceivedLoot(message)
+    if not IsSelfLootMessage(message) then
+        return
+    end
+
+    local seen = {}
+    for itemString in tostring(message or ""):gmatch(Plutocraseeker.itemPattern) do
+        local itemId = tonumber(itemString)
+        if itemId and not seen[itemId] then
+            seen[itemId] = true
+            local sets = Plutocraseeker.GetSetsContainingItem(itemId, true)
+            if #sets > 0 and Plutocraseeker.UI and Plutocraseeker.UI.ShowReceivedItemPrompt then
+                local link = message:match("(|c%x+|Hitem:" .. itemString .. ":[^|]+|h%[[^%]]+%]|h|r)")
+                Plutocraseeker.UI.ShowReceivedItemPrompt(itemId, link or Plutocraseeker.GetItemName(itemId), sets)
+            end
+        end
+    end
+end
+
 local function ScanLootWindow()
     if not GetNumLootItems or not GetLootSlotLink then
         return
@@ -1527,6 +1637,7 @@ eventFrame:RegisterEvent("PARTY_LOOT_METHOD_CHANGED")
 eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 eventFrame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
 eventFrame:RegisterEvent("LOOT_OPENED")
+eventFrame:RegisterEvent("CHAT_MSG_LOOT")
 eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 
 eventFrame:SetScript("OnEvent", function(_, event, ...)
@@ -1560,6 +1671,12 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         return
     end
 
+    if event == "CHAT_MSG_LOOT" then
+        local message = ...
+        PromptForReceivedLoot(message)
+        return
+    end
+
     if event == "PLAYER_TARGET_CHANGED" then
         ScanTargetForWantedLoot()
         return
@@ -1585,6 +1702,101 @@ end)
 
 SLASH_PLUTOCRASEEKER1 = "/plutocraseeker"
 SLASH_PLUTOCRASEEKER2 = "/ps"
+
+local function FindTestWatchedItem()
+    local selectedSet = Plutocraseeker.GetSelectedSet and Plutocraseeker.GetSelectedSet()
+    if selectedSet and selectedSet.enabled and type(selectedSet.items) == "table" then
+        for _, item in ipairs(selectedSet.items) do
+            local itemId = tonumber(item and item.id)
+            if itemId then
+                return itemId, item
+            end
+        end
+    end
+
+    for _, set in ipairs(Plutocraseeker.db and Plutocraseeker.db.sets or {}) do
+        if set.enabled then
+            for _, item in ipairs(set.items or {}) do
+                local itemId = tonumber(item and item.id)
+                if itemId then
+                    return itemId, item
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function TestReceivedItemPrompt()
+    if not Plutocraseeker.UI or not Plutocraseeker.UI.ShowReceivedItemPrompt then
+        Print("UI is not loaded.")
+        return
+    end
+
+    local itemId = FindTestWatchedItem()
+    if not itemId then
+        Print("Add at least one watched item before testing received-item cleanup.")
+        return
+    end
+
+    local sets = Plutocraseeker.GetSetsContainingItem(itemId, true)
+    if #sets == 0 then
+        Print("The test item is not in any enabled watched set.")
+        return
+    end
+
+    Plutocraseeker.UI.ShowReceivedItemPrompt(itemId, Plutocraseeker.GetItemName(itemId), sets)
+end
+
+local function TestLootAlert()
+    if not Plutocraseeker.UI or not Plutocraseeker.UI.ShowLootAlert then
+        Print("UI is not loaded.")
+        return
+    end
+
+    local itemId, item = FindTestWatchedItem()
+    if not itemId then
+        Print("Add at least one enabled watched item before testing loot alerts.")
+        return
+    end
+
+    local match = BuildAlertMatch(itemId, Plutocraseeker.GetItemName(itemId), item and item.source)
+    if not match then
+        Print("The test item is not in any enabled watched set.")
+        return
+    end
+
+    Plutocraseeker.UI.ShowLootAlert({ match }, {
+        source = "target",
+        bossName = "Test Loot Alert",
+    })
+end
+
+local function TestItemLinkedAlert()
+    if not Plutocraseeker.UI or not Plutocraseeker.UI.ShowLootAlert then
+        Print("UI is not loaded.")
+        return
+    end
+
+    local itemId, item = FindTestWatchedItem()
+    if not itemId then
+        Print("Add at least one enabled watched item before testing item-link alerts.")
+        return
+    end
+
+    local match = BuildAlertMatch(itemId, Plutocraseeker.GetItemName(itemId), item and item.source)
+    if not match then
+        Print("The test item is not in any enabled watched set.")
+        return
+    end
+
+    Plutocraseeker.UI.ShowLootAlert({ match }, {
+        source = "chat",
+        sender = UnitName and UnitName("player") or "Test Player",
+    })
+end
+
 SlashCmdList.PLUTOCRASEEKER = function(input)
     local command, rest = tostring(input or ""):match("^%s*(%S*)%s*(.-)%s*$")
     command = command and command:lower() or ""
@@ -1604,6 +1816,17 @@ SlashCmdList.PLUTOCRASEEKER = function(input)
         Plutocraseeker.OpenAtlasLoot()
     elseif command == "new" and rest ~= "" then
         Plutocraseeker.CreateSet(rest)
+    elseif command == "test" then
+        local testName = rest:lower()
+        if testName == "item_received" then
+            TestReceivedItemPrompt()
+        elseif testName == "loot_alert" then
+            TestLootAlert()
+        elseif testName == "item_linked" then
+            TestItemLinkedAlert()
+        else
+            Print("Unknown test. Try /ps test loot_alert, /ps test item_linked, or /ps test item_received.")
+        end
     else
         Plutocraseeker.ToggleUI()
     end

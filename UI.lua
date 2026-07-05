@@ -6,10 +6,15 @@ local UI = Plutocraseeker.UI
 local mainFrame
 local configFrame
 local alertFrame
+local mentionAlertFrame
 local anchorOverlay
 local importFrame
 local wowheadImportFrame
+local characterImportFrame
+local exportFrame
 local confirmDeleteFrame
+local receivedItemFrame
+local receivedItemQueue = {}
 local setRows = {}
 local itemRows = {}
 local itemOffset = 0
@@ -19,6 +24,7 @@ local TOOLTIP_HOVER_DELAY = 0.25
 local MAIN_FRAME_HEIGHT = 520
 local MAIN_PANEL_HEIGHT = 396
 local ALERT_MAX_HEIGHT = 420
+local ALERT_FRAME_WIDTH = 500
 local ALERT_ITEM_VIEW_HEIGHT = 184
 local ALERT_DEFAULT_TOP_OFFSET = -180
 local colors = {
@@ -171,17 +177,17 @@ local function CreateScrollBar(parent, height)
     return bar
 end
 
-local function SetAlertItemScroll(offset)
-    if not alertFrame or not alertFrame.itemScroll then
+local function SetAlertItemScroll(frame, offset)
+    if not frame or not frame.itemScroll then
         return
     end
 
-    local maxScroll = alertFrame.itemMaxScroll or 0
+    local maxScroll = frame.itemMaxScroll or 0
     offset = math.max(0, math.min(offset or 0, maxScroll))
-    alertFrame.itemScroll:SetVerticalScroll(offset)
-    alertFrame.itemScrollOffset = offset
+    frame.itemScroll:SetVerticalScroll(offset)
+    frame.itemScrollOffset = offset
 
-    local bar = alertFrame.itemScrollBar
+    local bar = frame.itemScrollBar
     if not bar then
         return
     end
@@ -196,8 +202,8 @@ local function SetAlertItemScroll(offset)
     bar.down.text:SetText(offset < maxScroll and "v" or "|cff3f4947v|r")
 
     local trackHeight = bar.height - 42
-    local contentHeight = alertFrame.itemContentHeight or ALERT_ITEM_VIEW_HEIGHT
-    local viewHeight = alertFrame.itemViewHeight or ALERT_ITEM_VIEW_HEIGHT
+    local contentHeight = frame.itemContentHeight or ALERT_ITEM_VIEW_HEIGHT
+    local viewHeight = frame.itemViewHeight or ALERT_ITEM_VIEW_HEIGHT
     local thumbHeight = math.max(24, math.floor(trackHeight * (viewHeight / math.max(contentHeight, 1))))
     local travel = math.max(trackHeight - thumbHeight, 1)
     local y = -21 - math.floor(travel * (offset / math.max(maxScroll, 1)))
@@ -216,13 +222,13 @@ local function CreateAlertScrollBar(parent, height)
     bar.up = CreateButton(bar, "^", 12, 18)
     bar.up:SetPoint("TOP", 0, 0)
     bar.up:SetScript("OnClick", function()
-        SetAlertItemScroll((alertFrame and alertFrame.itemScrollOffset or 0) - 24)
+        SetAlertItemScroll(parent, (parent.itemScrollOffset or 0) - 24)
     end)
 
     bar.down = CreateButton(bar, "v", 12, 18)
     bar.down:SetPoint("BOTTOM", 0, 0)
     bar.down:SetScript("OnClick", function()
-        SetAlertItemScroll((alertFrame and alertFrame.itemScrollOffset or 0) + 24)
+        SetAlertItemScroll(parent, (parent.itemScrollOffset or 0) + 24)
     end)
 
     bar.thumb = CreateFrame("Frame", nil, bar, Template())
@@ -345,6 +351,34 @@ local function ApplyAlertAnchor(frame)
     end
 end
 
+local function PositionAlertStack()
+    local previousFrame
+
+    if alertFrame and alertFrame:IsShown() then
+        ApplyAlertAnchor(alertFrame)
+        previousFrame = alertFrame
+    end
+
+    if mentionAlertFrame and mentionAlertFrame:IsShown() then
+        mentionAlertFrame:ClearAllPoints()
+        if previousFrame then
+            mentionAlertFrame:SetPoint("TOP", previousFrame, "BOTTOM", 0, 0)
+        else
+            ApplyAlertAnchor(mentionAlertFrame)
+        end
+        previousFrame = mentionAlertFrame
+    end
+
+    if receivedItemFrame and receivedItemFrame:IsShown() then
+        receivedItemFrame:ClearAllPoints()
+        if previousFrame then
+            receivedItemFrame:SetPoint("TOP", previousFrame, "BOTTOM", 0, 0)
+        else
+            ApplyAlertAnchor(receivedItemFrame)
+        end
+    end
+end
+
 local function SaveAlertAnchorFromFrame(frame)
     local anchor = GetAlertAnchorConfig()
     if not anchor or not frame then
@@ -368,78 +402,81 @@ local function ResetAlertAnchor()
         anchor.y = nil
     end
 
-    if alertFrame then
-        ApplyAlertAnchor(alertFrame)
-    end
+    PositionAlertStack()
 end
 
-local function CreateAlertFrame()
-    alertFrame = CreateFrame("Frame", "PlutocraseekerLootAlertFrame", UIParent, Template())
-    alertFrame:SetSize(500, 220)
-    ApplyAlertAnchor(alertFrame)
-    alertFrame:SetFrameStrata("FULLSCREEN_DIALOG")
-    alertFrame:EnableMouse(true)
-    alertFrame:SetMovable(true)
-    if alertFrame.SetClampedToScreen then
-        alertFrame:SetClampedToScreen(true)
+local function CreateAlertFrame(frameName)
+    local frame = CreateFrame("Frame", frameName, UIParent, Template())
+    frame:SetSize(ALERT_FRAME_WIDTH, 220)
+    ApplyAlertAnchor(frame)
+    frame:SetFrameStrata("FULLSCREEN_DIALOG")
+    frame:EnableMouse(true)
+    frame:SetMovable(true)
+    if frame.SetClampedToScreen then
+        frame:SetClampedToScreen(true)
     end
-    alertFrame:RegisterForDrag("LeftButton")
-    alertFrame:SetScript("OnDragStart", alertFrame.StartMoving)
-    alertFrame:SetScript("OnDragStop", alertFrame.StopMovingOrSizing)
-    alertFrame:Hide()
-    ApplyBackdrop(alertFrame, colors.bg)
-    RegisterEscapeFrame("PlutocraseekerLootAlertFrame")
+    frame:RegisterForDrag("LeftButton")
+    frame:SetScript("OnDragStart", frame.StartMoving)
+    frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+    frame:Hide()
+    frame:SetScript("OnHide", function()
+        PositionAlertStack()
+    end)
+    ApplyBackdrop(frame, colors.bg)
+    RegisterEscapeFrame(frameName)
 
-    alertFrame.title = CreateText(alertFrame, "Plutocraseeker Loot Match", 18, colors.accent)
-    alertFrame.title:SetPoint("TOPLEFT", 18, -16)
+    frame.title = CreateText(frame, "Plutocraseeker Loot Match", 18, colors.accent)
+    frame.title:SetPoint("TOPLEFT", 18, -16)
 
-    alertFrame.context = CreateText(alertFrame, "", 12, colors.muted)
-    alertFrame.context:SetPoint("TOPLEFT", alertFrame.title, "BOTTOMLEFT", 0, -10)
-    alertFrame.context:SetWidth(390)
+    frame.context = CreateText(frame, "", 12, colors.muted)
+    frame.context:SetPoint("TOPLEFT", frame.title, "BOTTOMLEFT", 0, -10)
+    frame.context:SetWidth(390)
 
-    alertFrame.motivation = CreateText(alertFrame, "This mob possesses wealth that you wish to acquire.", 12, { 1.0, 0.82, 0.18, 1 })
-    alertFrame.motivation:SetPoint("TOPLEFT", alertFrame.title, "BOTTOMLEFT", 0, -10)
-    alertFrame.motivation:SetWidth(450)
-    alertFrame.motivation:Hide()
+    frame.motivation = CreateText(frame, "This mob possesses wealth that you wish to acquire.", 12, { 1.0, 0.82, 0.18, 1 })
+    frame.motivation:SetPoint("TOPLEFT", frame.title, "BOTTOMLEFT", 0, -10)
+    frame.motivation:SetWidth(450)
+    frame.motivation:Hide()
 
-    alertFrame.earnIt = CreateText(alertFrame, "GO EARN IT!", 13, { 1.0, 0.82, 0.18, 1 })
-    alertFrame.earnIt:SetPoint("TOPLEFT", alertFrame.motivation, "BOTTOMLEFT", 0, -2)
-    alertFrame.earnIt:SetWidth(110)
-    alertFrame.earnIt:Hide()
+    frame.earnIt = CreateText(frame, "GO EARN IT!", 13, { 1.0, 0.82, 0.18, 1 })
+    frame.earnIt:SetPoint("TOPLEFT", frame.motivation, "BOTTOMLEFT", 0, -2)
+    frame.earnIt:SetWidth(110)
+    frame.earnIt:Hide()
 
-    alertFrame.earnItPulse = alertFrame.earnIt:CreateAnimationGroup()
-    alertFrame.earnItPulse:SetLooping("BOUNCE")
-    alertFrame.earnItPulse.fade = alertFrame.earnItPulse:CreateAnimation("Alpha")
-    alertFrame.earnItPulse.fade:SetFromAlpha(1)
-    alertFrame.earnItPulse.fade:SetToAlpha(0.35)
-    alertFrame.earnItPulse.fade:SetDuration(0.55)
+    frame.earnItPulse = frame.earnIt:CreateAnimationGroup()
+    frame.earnItPulse:SetLooping("BOUNCE")
+    frame.earnItPulse.fade = frame.earnItPulse:CreateAnimation("Alpha")
+    frame.earnItPulse.fade:SetFromAlpha(1)
+    frame.earnItPulse.fade:SetToAlpha(0.35)
+    frame.earnItPulse.fade:SetDuration(0.55)
 
-    alertFrame.itemScroll = CreateFrame("ScrollFrame", nil, alertFrame)
-    alertFrame.itemScroll:SetPoint("TOPLEFT", alertFrame.context, "BOTTOMLEFT", 0, -12)
-    alertFrame.itemScroll:SetSize(450, ALERT_ITEM_VIEW_HEIGHT)
-    alertFrame.itemScroll:EnableMouseWheel(true)
-    alertFrame.itemScroll:SetScript("OnMouseWheel", function(_, delta)
-        SetAlertItemScroll((alertFrame.itemScrollOffset or 0) - (delta * 24))
+    frame.itemScroll = CreateFrame("ScrollFrame", nil, frame)
+    frame.itemScroll:SetPoint("TOPLEFT", frame.context, "BOTTOMLEFT", 0, -12)
+    frame.itemScroll:SetSize(450, ALERT_ITEM_VIEW_HEIGHT)
+    frame.itemScroll:EnableMouseWheel(true)
+    frame.itemScroll:SetScript("OnMouseWheel", function(_, delta)
+        SetAlertItemScroll(frame, (frame.itemScrollOffset or 0) - (delta * 24))
     end)
 
-    alertFrame.itemScrollChild = CreateFrame("Frame", nil, alertFrame.itemScroll)
-    alertFrame.itemScrollChild:SetSize(450, 1)
-    alertFrame.itemScroll:SetScrollChild(alertFrame.itemScrollChild)
+    frame.itemScrollChild = CreateFrame("Frame", nil, frame.itemScroll)
+    frame.itemScrollChild:SetSize(450, 1)
+    frame.itemScroll:SetScrollChild(frame.itemScrollChild)
 
-    alertFrame.itemScrollBar = CreateAlertScrollBar(alertFrame, ALERT_ITEM_VIEW_HEIGHT)
-    alertFrame.itemScrollBar:SetPoint("TOPLEFT", alertFrame.itemScroll, "TOPRIGHT", 6, 0)
+    frame.itemScrollBar = CreateAlertScrollBar(frame, ALERT_ITEM_VIEW_HEIGHT)
+    frame.itemScrollBar:SetPoint("TOPLEFT", frame.itemScroll, "TOPRIGHT", 6, 0)
 
-    alertFrame.close = CreateButton(alertFrame, "X", 28, 26)
-    alertFrame.close:SetPoint("TOPRIGHT", -12, -12)
-    alertFrame.close:SetScript("OnClick", function()
-        alertFrame:Hide()
+    frame.close = CreateButton(frame, "X", 28, 26)
+    frame.close:SetPoint("TOPRIGHT", -12, -12)
+    frame.close:SetScript("OnClick", function()
+        frame:Hide()
     end)
 
-    alertFrame.dismiss = CreateButton(alertFrame, "Dismiss", 82, 28)
-    alertFrame.dismiss:SetPoint("BOTTOMRIGHT", -14, 14)
-    alertFrame.dismiss:SetScript("OnClick", function()
-        alertFrame:Hide()
+    frame.dismiss = CreateButton(frame, "Dismiss", 82, 28)
+    frame.dismiss:SetPoint("BOTTOMRIGHT", -14, 14)
+    frame.dismiss:SetScript("OnClick", function()
+        frame:Hide()
     end)
+
+    return frame
 end
 
 local function BuildAlertLine(match)
@@ -534,10 +571,6 @@ local function BuildAlertLines(matches, context)
 end
 
 function UI.ShowLootAlert(matchesOrItemText, setTextOrContext, sender)
-    if not alertFrame then
-        CreateAlertFrame()
-    end
-
     local matches
     local context = {}
     if type(matchesOrItemText) == "table" then
@@ -554,59 +587,72 @@ function UI.ShowLootAlert(matchesOrItemText, setTextOrContext, sender)
         context.source = sender and "chat" or "loot"
     end
 
-    if context.source == "loot" then
-        alertFrame.context:SetText("Found in loot window")
-    elseif context.source == "target" then
-        alertFrame.context:SetText("Targeted: " .. tostring(context.bossName or context.targetName or "tracked boss"))
-    elseif context.sender and context.sender ~= "" then
-        alertFrame.context:SetText("Mentioned by: " .. context.sender)
+    local frame
+    if context.source == "chat" then
+        if not mentionAlertFrame then
+            mentionAlertFrame = CreateAlertFrame("PlutocraseekerMentionAlertFrame")
+        end
+        frame = mentionAlertFrame
     else
-        alertFrame.context:SetText("Wanted item matched")
+        if not alertFrame then
+            alertFrame = CreateAlertFrame("PlutocraseekerLootAlertFrame")
+        end
+        frame = alertFrame
     end
 
-    alertFrame.itemScroll:ClearAllPoints()
-    if context.source == "target" then
-        alertFrame.motivation:Show()
-        alertFrame.earnIt:SetAlpha(1)
-        alertFrame.earnIt:Show()
-        if alertFrame.earnItPulse then
-            alertFrame.earnItPulse:Play()
-        end
-        alertFrame.context:ClearAllPoints()
-        alertFrame.context:SetPoint("TOPLEFT", alertFrame.earnIt, "BOTTOMLEFT", 0, -8)
-        alertFrame.itemScroll:SetPoint("TOPLEFT", alertFrame.context, "BOTTOMLEFT", 0, -12)
+    if context.source == "loot" then
+        frame.context:SetText("Found in loot window")
+    elseif context.source == "target" then
+        frame.context:SetText("Targeted: " .. tostring(context.bossName or context.targetName or "tracked boss"))
+    elseif context.sender and context.sender ~= "" then
+        frame.context:SetText("Mentioned by: " .. context.sender)
     else
-        if alertFrame.earnItPulse then
-            alertFrame.earnItPulse:Stop()
+        frame.context:SetText("Wanted item matched")
+    end
+
+    frame.itemScroll:ClearAllPoints()
+    if context.source == "target" then
+        frame.motivation:Show()
+        frame.earnIt:SetAlpha(1)
+        frame.earnIt:Show()
+        if frame.earnItPulse then
+            frame.earnItPulse:Play()
         end
-        alertFrame.earnIt:SetAlpha(1)
-        alertFrame.earnIt:Hide()
-        alertFrame.motivation:Hide()
-        alertFrame.context:ClearAllPoints()
-        alertFrame.context:SetPoint("TOPLEFT", alertFrame.title, "BOTTOMLEFT", 0, -10)
-        alertFrame.itemScroll:SetPoint("TOPLEFT", alertFrame.context, "BOTTOMLEFT", 0, -12)
+        frame.context:ClearAllPoints()
+        frame.context:SetPoint("TOPLEFT", frame.earnIt, "BOTTOMLEFT", 0, -8)
+        frame.itemScroll:SetPoint("TOPLEFT", frame.context, "BOTTOMLEFT", 0, -12)
+    else
+        if frame.earnItPulse then
+            frame.earnItPulse:Stop()
+        end
+        frame.earnIt:SetAlpha(1)
+        frame.earnIt:Hide()
+        frame.motivation:Hide()
+        frame.context:ClearAllPoints()
+        frame.context:SetPoint("TOPLEFT", frame.title, "BOTTOMLEFT", 0, -10)
+        frame.itemScroll:SetPoint("TOPLEFT", frame.context, "BOTTOMLEFT", 0, -12)
     end
 
     local _, lineCount, lineData = BuildAlertLines(matches, context)
-    local lineHeight = 20
+    local lineHeight = context.source == "chat" and 44 or 20
     local contentHeight = math.max((lineCount or #matches) * lineHeight, 1)
     local viewHeight = math.min(contentHeight, ALERT_ITEM_VIEW_HEIGHT)
-    alertFrame.itemContentHeight = contentHeight
-    alertFrame.itemViewHeight = viewHeight
-    alertFrame.itemMaxScroll = math.max(contentHeight - viewHeight, 0)
-    alertFrame.itemScroll:SetSize(450, viewHeight)
-    alertFrame.itemScrollChild:SetSize(450, contentHeight)
-    alertFrame.itemScrollBar:SetHeight(viewHeight)
-    alertFrame.itemScrollBar.height = viewHeight
-    SetAlertItemScroll(0)
+    frame.itemContentHeight = contentHeight
+    frame.itemViewHeight = viewHeight
+    frame.itemMaxScroll = math.max(contentHeight - viewHeight, 0)
+    frame.itemScroll:SetSize(450, viewHeight)
+    frame.itemScrollChild:SetSize(450, contentHeight)
+    frame.itemScrollBar:SetHeight(viewHeight)
+    frame.itemScrollBar.height = viewHeight
+    SetAlertItemScroll(frame, 0)
     if RefreshAlertTooltipRows then
-        RefreshAlertTooltipRows(lineData, lineHeight)
+        RefreshAlertTooltipRows(frame, lineData, lineHeight)
     end
 
     local extraHeight = context.source == "target" and 42 or 0
-    alertFrame:SetHeight(math.min(160 + extraHeight + viewHeight, ALERT_MAX_HEIGHT))
-    ApplyAlertAnchor(alertFrame)
-    alertFrame:Show()
+    frame:SetHeight(math.min(160 + extraHeight + viewHeight, ALERT_MAX_HEIGHT))
+    frame:Show()
+    PositionAlertStack()
     PlayAlertSound()
 end
 
@@ -693,20 +739,20 @@ local function ScheduleItemTooltip(row)
     end
 end
 
-RefreshAlertTooltipRows = function(lineData, lineHeight)
-    if not alertFrame or not alertFrame.itemScrollChild then
+RefreshAlertTooltipRows = function(frame, lineData, lineHeight)
+    if not frame or not frame.itemScrollChild then
         return
     end
 
-    alertFrame.alertTooltipRows = alertFrame.alertTooltipRows or {}
+    frame.alertTooltipRows = frame.alertTooltipRows or {}
     lineHeight = lineHeight or 20
     lineData = lineData or {}
     HideItemTooltip()
 
     for index, data in ipairs(lineData) do
-        local row = alertFrame.alertTooltipRows[index]
+        local row = frame.alertTooltipRows[index]
         if not row then
-            row = CreateFrame("Button", nil, alertFrame.itemScrollChild)
+            row = CreateFrame("Button", nil, frame.itemScrollChild)
             row:SetSize(430, lineHeight)
             row:EnableMouse(true)
             row:EnableMouseWheel(true)
@@ -721,17 +767,19 @@ RefreshAlertTooltipRows = function(lineData, lineHeight)
             row:SetScript("OnLeave", function()
                 HideItemTooltip()
             end)
-            row:SetScript("OnMouseWheel", function(_, delta)
-                SetAlertItemScroll((alertFrame.itemScrollOffset or 0) - (delta * 24))
+            row:SetScript("OnMouseWheel", function(self, delta)
+                SetAlertItemScroll(self.alertFrame, ((self.alertFrame and self.alertFrame.itemScrollOffset) or 0) - (delta * 24))
             end)
-            alertFrame.alertTooltipRows[index] = row
+            frame.alertTooltipRows[index] = row
         end
 
+        row.alertFrame = frame
         row.itemId = tonumber(data and data.itemId)
         row.pendingTooltipItemId = nil
         row.text:SetText(tostring(data and data.text or ""))
         row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", alertFrame.itemScrollChild, "TOPLEFT", 0, -((index - 1) * lineHeight))
+        row:SetPoint("TOPLEFT", frame.itemScrollChild, "TOPLEFT", 0, -((index - 1) * lineHeight))
+        row:SetSize(430, lineHeight)
         row:SetHeight(lineHeight)
         if data then
             row:Show()
@@ -740,8 +788,9 @@ RefreshAlertTooltipRows = function(lineData, lineHeight)
         end
     end
 
-    for index = #lineData + 1, #alertFrame.alertTooltipRows do
-        local row = alertFrame.alertTooltipRows[index]
+    for index = #lineData + 1, #frame.alertTooltipRows do
+        local row = frame.alertTooltipRows[index]
+        row.alertFrame = nil
         row.itemId = nil
         row.pendingTooltipItemId = nil
         if row.text then
@@ -870,6 +919,397 @@ local function ImportWowheadGearPlanner(text, setName)
     return added > 0
 end
 
+local function JsonEscape(value)
+    local text = tostring(value or "")
+    text = text:gsub("\\", "\\\\")
+    text = text:gsub('"', '\\"')
+    text = text:gsub("\b", "\\b")
+    text = text:gsub("\f", "\\f")
+    text = text:gsub("\n", "\\n")
+    text = text:gsub("\r", "\\r")
+    text = text:gsub("\t", "\\t")
+    return '"' .. text .. '"'
+end
+
+local function IsArrayTable(value)
+    if type(value) ~= "table" then
+        return false
+    end
+
+    local count = 0
+    for key in pairs(value) do
+        if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+            return false
+        end
+        count = count + 1
+    end
+
+    return count == #value
+end
+
+local EncodeJsonValue
+
+local function EncodeJsonArray(value, depth)
+    local parts = {}
+    for index = 1, #value do
+        parts[#parts + 1] = EncodeJsonValue(value[index], depth + 1)
+    end
+    return "[" .. table.concat(parts, ",") .. "]"
+end
+
+local function EncodeJsonObject(value, depth)
+    local keys = {}
+    for key, child in pairs(value) do
+        local childType = type(child)
+        if (type(key) == "string" or type(key) == "number") and childType ~= "function" and childType ~= "userdata" and childType ~= "thread" then
+            keys[#keys + 1] = key
+        end
+    end
+    table.sort(keys, function(left, right)
+        return tostring(left) < tostring(right)
+    end)
+
+    local parts = {}
+    for _, key in ipairs(keys) do
+        parts[#parts + 1] = JsonEscape(key) .. ":" .. EncodeJsonValue(value[key], depth + 1)
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+
+EncodeJsonValue = function(value, depth)
+    depth = depth or 0
+    if depth > 12 then
+        return "null"
+    end
+
+    local valueType = type(value)
+    if valueType == "nil" then
+        return "null"
+    elseif valueType == "string" then
+        return JsonEscape(value)
+    elseif valueType == "number" then
+        if value ~= value or value == math.huge or value == -math.huge then
+            return "null"
+        end
+        return tostring(value)
+    elseif valueType == "boolean" then
+        return value and "true" or "false"
+    elseif valueType == "table" then
+        if IsArrayTable(value) then
+            return EncodeJsonArray(value, depth)
+        end
+        return EncodeJsonObject(value, depth)
+    end
+
+    return "null"
+end
+
+local function BuildCharacterSetsExport()
+    local db = Plutocraseeker.db or {}
+    local characterName = UnitName and UnitName("player") or nil
+    local realmName = GetRealmName and GetRealmName() or nil
+    local payload = {
+        addon = "Plutocraseeker",
+        export = "character",
+        version = 1,
+        character = {
+            name = characterName,
+            realm = realmName,
+        },
+        data = {
+            selectedSetId = db.selectedSetId,
+            nextSetId = db.nextSetId,
+            sets = {},
+        },
+    }
+
+    for _, set in ipairs(db.sets or {}) do
+        local exportedSet = {
+            id = set.id,
+            name = set.name,
+            enabled = set.enabled ~= false,
+            items = {},
+        }
+
+        for _, item in ipairs(set.items or {}) do
+            exportedSet.items[#exportedSet.items + 1] = {
+                id = item.id,
+                difficultyPrefix = item.difficultyPrefix,
+                heroic = item.heroic,
+                addedAt = item.addedAt,
+                source = item.source,
+            }
+        end
+
+        payload.data.sets[#payload.data.sets + 1] = exportedSet
+    end
+
+    return EncodeJsonValue(payload)
+end
+
+local function DecodeJsonError(message, position)
+    return nil, tostring(message or "Invalid JSON") .. " near character " .. tostring(position or "?")
+end
+
+local function DecodeJson(text)
+    text = tostring(text or "")
+    local position = 1
+
+    local function SkipWhitespace()
+        local _, finish = text:find("^[ \n\r\t]*", position)
+        position = (finish or position - 1) + 1
+    end
+
+    local ParseValue
+
+    local function ParseString()
+        if text:sub(position, position) ~= '"' then
+            return DecodeJsonError("Expected string", position)
+        end
+
+        position = position + 1
+        local result = {}
+        while position <= #text do
+            local char = text:sub(position, position)
+            if char == '"' then
+                position = position + 1
+                return table.concat(result)
+            elseif char == "\\" then
+                local escaped = text:sub(position + 1, position + 1)
+                if escaped == '"' or escaped == "\\" or escaped == "/" then
+                    result[#result + 1] = escaped
+                    position = position + 2
+                elseif escaped == "b" then
+                    result[#result + 1] = "\b"
+                    position = position + 2
+                elseif escaped == "f" then
+                    result[#result + 1] = "\f"
+                    position = position + 2
+                elseif escaped == "n" then
+                    result[#result + 1] = "\n"
+                    position = position + 2
+                elseif escaped == "r" then
+                    result[#result + 1] = "\r"
+                    position = position + 2
+                elseif escaped == "t" then
+                    result[#result + 1] = "\t"
+                    position = position + 2
+                elseif escaped == "u" then
+                    local code = tonumber(text:sub(position + 2, position + 5), 16)
+                    if not code then
+                        return DecodeJsonError("Invalid unicode escape", position)
+                    end
+                    result[#result + 1] = code < 128 and string.char(code) or "?"
+                    position = position + 6
+                else
+                    return DecodeJsonError("Invalid escape", position)
+                end
+            else
+                result[#result + 1] = char
+                position = position + 1
+            end
+        end
+
+        return DecodeJsonError("Unterminated string", position)
+    end
+
+    local function ParseNumber()
+        local start = position
+        local _, finish = text:find("^-?%d+%.?%d*[eE]?[+-]?%d*", position)
+        if not finish or finish < position then
+            return DecodeJsonError("Expected number", position)
+        end
+        local value = tonumber(text:sub(start, finish))
+        if value == nil then
+            return DecodeJsonError("Invalid number", start)
+        end
+        position = finish + 1
+        return value
+    end
+
+    local function ParseArray()
+        position = position + 1
+        local result = {}
+        SkipWhitespace()
+        if text:sub(position, position) == "]" then
+            position = position + 1
+            return result
+        end
+
+        while position <= #text do
+            local value, errorMessage = ParseValue()
+            if errorMessage then
+                return nil, errorMessage
+            end
+            result[#result + 1] = value
+            SkipWhitespace()
+            local char = text:sub(position, position)
+            if char == "]" then
+                position = position + 1
+                return result
+            elseif char ~= "," then
+                return DecodeJsonError("Expected comma or closing bracket", position)
+            end
+            position = position + 1
+            SkipWhitespace()
+        end
+
+        return DecodeJsonError("Unterminated array", position)
+    end
+
+    local function ParseObject()
+        position = position + 1
+        local result = {}
+        SkipWhitespace()
+        if text:sub(position, position) == "}" then
+            position = position + 1
+            return result
+        end
+
+        while position <= #text do
+            local key, keyError = ParseString()
+            if keyError then
+                return nil, keyError
+            end
+            SkipWhitespace()
+            if text:sub(position, position) ~= ":" then
+                return DecodeJsonError("Expected colon", position)
+            end
+            position = position + 1
+            local value, valueError = ParseValue()
+            if valueError then
+                return nil, valueError
+            end
+            result[key] = value
+            SkipWhitespace()
+            local char = text:sub(position, position)
+            if char == "}" then
+                position = position + 1
+                return result
+            elseif char ~= "," then
+                return DecodeJsonError("Expected comma or closing brace", position)
+            end
+            position = position + 1
+            SkipWhitespace()
+        end
+
+        return DecodeJsonError("Unterminated object", position)
+    end
+
+    ParseValue = function()
+        SkipWhitespace()
+        local char = text:sub(position, position)
+        if char == '"' then
+            return ParseString()
+        elseif char == "{" then
+            return ParseObject()
+        elseif char == "[" then
+            return ParseArray()
+        elseif char == "-" or char:match("%d") then
+            return ParseNumber()
+        elseif text:sub(position, position + 3) == "true" then
+            position = position + 4
+            return true
+        elseif text:sub(position, position + 4) == "false" then
+            position = position + 5
+            return false
+        elseif text:sub(position, position + 3) == "null" then
+            position = position + 4
+            return nil
+        end
+        return DecodeJsonError("Unexpected token", position)
+    end
+
+    local value, errorMessage = ParseValue()
+    if errorMessage then
+        return nil, errorMessage
+    end
+    SkipWhitespace()
+    if position <= #text then
+        return DecodeJsonError("Unexpected trailing content", position)
+    end
+    return value
+end
+
+local function SanitizeImportedSets(sets)
+    local sanitized = {}
+    local maxId = 0
+    if type(sets) ~= "table" then
+        return sanitized, maxId
+    end
+
+    for _, set in ipairs(sets) do
+        if type(set) == "table" then
+            local setId = tonumber(set.id) or (#sanitized + 1)
+            maxId = math.max(maxId, setId)
+            local nextSet = {
+                id = setId,
+                name = tostring(set.name or ("Imported " .. tostring(setId))),
+                enabled = set.enabled ~= false,
+                items = {},
+            }
+
+            for _, item in ipairs(set.items or {}) do
+                if type(item) == "table" and tonumber(item.id) then
+                    nextSet.items[#nextSet.items + 1] = {
+                        id = tonumber(item.id),
+                        difficultyPrefix = item.difficultyPrefix,
+                        heroic = item.heroic,
+                        addedAt = tonumber(item.addedAt) or (time and time() or 0),
+                        source = type(item.source) == "table" and item.source or nil,
+                    }
+                end
+            end
+
+            sanitized[#sanitized + 1] = nextSet
+        end
+    end
+
+    return sanitized, maxId
+end
+
+local function ImportCharacterSets(text)
+    local payload, errorMessage = DecodeJson(text)
+    if errorMessage then
+        return false, errorMessage
+    end
+    if type(payload) ~= "table" or payload.addon ~= "Plutocraseeker" then
+        return false, "This does not look like a Plutocraseeker export."
+    end
+
+    local data = type(payload.data) == "table" and payload.data or payload
+    local sets, maxId = SanitizeImportedSets(data.sets)
+    if #sets == 0 then
+        return false, "No character sets were found in the export."
+    end
+
+    local selectedSetId = tonumber(data.selectedSetId)
+    local hasSelectedSet = false
+    for _, set in ipairs(sets) do
+        if set.id == selectedSetId then
+            hasSelectedSet = true
+            break
+        end
+    end
+
+    Plutocraseeker.db.sets = sets
+    Plutocraseeker.db.nextSetId = math.max(tonumber(data.nextSetId) or 1, maxId + 1)
+    Plutocraseeker.db.selectedSetId = hasSelectedSet and selectedSetId or sets[1].id
+    itemOffset = 0
+
+    if Plutocraseeker.RebuildTargetNpcIndex then
+        Plutocraseeker.RebuildTargetNpcIndex()
+    end
+    if Plutocraseeker.ClearTooltipStatusCache then
+        Plutocraseeker.ClearTooltipStatusCache()
+    end
+    if Plutocraseeker.RefreshUI then
+        Plutocraseeker.RefreshUI()
+    end
+
+    return true, "Imported " .. tostring(#sets) .. " character set(s)."
+end
+
 local function RefreshConfigFrame()
     if not configFrame or not Plutocraseeker.db then
         return
@@ -991,9 +1431,7 @@ local function CreateAnchorOverlay()
     anchorOverlay.anchor:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
         SaveAlertAnchorFromFrame(self)
-        if alertFrame then
-            ApplyAlertAnchor(alertFrame)
-        end
+        PositionAlertStack()
     end)
 
     anchorOverlay.done = CreateButton(anchorOverlay.anchor, "Done", 82, 30)
@@ -1159,6 +1597,167 @@ local function CreateWowheadImportFrame()
     end)
 end
 
+local function CreateCharacterImportFrame()
+    characterImportFrame = CreateFrame("Frame", "PlutocraseekerCharacterImportFrame", UIParent, Template())
+    characterImportFrame:SetSize(560, 420)
+    characterImportFrame:SetPoint("CENTER")
+    characterImportFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+    characterImportFrame:SetFrameLevel(120)
+    if characterImportFrame.SetToplevel then
+        characterImportFrame:SetToplevel(true)
+    end
+    characterImportFrame:EnableMouse(true)
+    characterImportFrame:SetMovable(true)
+    characterImportFrame:RegisterForDrag("LeftButton")
+    characterImportFrame:SetScript("OnDragStart", characterImportFrame.StartMoving)
+    characterImportFrame:SetScript("OnDragStop", characterImportFrame.StopMovingOrSizing)
+    characterImportFrame:Hide()
+    ApplyBackdrop(characterImportFrame, colors.bg)
+    RegisterEscapeFrame("PlutocraseekerCharacterImportFrame")
+
+    characterImportFrame.title = CreateText(characterImportFrame, "Import Character Sets", 18, colors.accent)
+    characterImportFrame.title:SetPoint("TOPLEFT", 18, -16)
+
+    characterImportFrame.subtitle = CreateText(characterImportFrame, "Paste a Plutocraseeker character export. This replaces this character's current sets.", 11, colors.muted)
+    characterImportFrame.subtitle:SetPoint("TOPLEFT", characterImportFrame.title, "BOTTOMLEFT", 0, -2)
+    characterImportFrame.subtitle:SetWidth(480)
+
+    characterImportFrame.close = CreateButton(characterImportFrame, "X", 28, 26)
+    characterImportFrame.close:SetPoint("TOPRIGHT", -12, -12)
+    characterImportFrame.close:SetScript("OnClick", function()
+        characterImportFrame:Hide()
+    end)
+
+    local editPanel = CreateFrame("Frame", nil, characterImportFrame, Template())
+    editPanel:SetPoint("TOPLEFT", 18, -64)
+    editPanel:SetSize(524, 286)
+    ApplyBackdrop(editPanel, { 0.045, 0.052, 0.06, 1 })
+
+    characterImportFrame.scroll = CreateFrame("ScrollFrame", nil, editPanel, "UIPanelScrollFrameTemplate")
+    characterImportFrame.scroll:SetPoint("TOPLEFT", 8, -8)
+    characterImportFrame.scroll:SetPoint("BOTTOMRIGHT", -28, 8)
+
+    characterImportFrame.edit = CreateFrame("EditBox", nil, characterImportFrame.scroll)
+    characterImportFrame.edit:SetMultiLine(true)
+    characterImportFrame.edit:SetAutoFocus(false)
+    characterImportFrame.edit:SetFont(STANDARD_TEXT_FONT, 12, "")
+    characterImportFrame.edit:SetTextColor(unpack(colors.text))
+    characterImportFrame.edit:SetJustifyH("LEFT")
+    characterImportFrame.edit:SetJustifyV("TOP")
+    characterImportFrame.edit:SetWidth(480)
+    characterImportFrame.edit:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+    end)
+    characterImportFrame.scroll:SetScrollChild(characterImportFrame.edit)
+
+    characterImportFrame.import = CreateButton(characterImportFrame, "Import", 90, 30)
+    characterImportFrame.import:SetPoint("BOTTOMRIGHT", -18, 18)
+    characterImportFrame.import:SetScript("OnClick", function()
+        local ok, message = ImportCharacterSets(characterImportFrame.edit:GetText())
+        if Plutocraseeker.Print and message then
+            Plutocraseeker.Print(message)
+        end
+        if ok then
+            characterImportFrame.edit:SetText("")
+            characterImportFrame:Hide()
+        end
+    end)
+
+    characterImportFrame.clear = CreateButton(characterImportFrame, "Clear", 70, 30)
+    characterImportFrame.clear:SetPoint("RIGHT", characterImportFrame.import, "LEFT", -8, 0)
+    characterImportFrame.clear:SetScript("OnClick", function()
+        characterImportFrame.edit:SetText("")
+        characterImportFrame.edit:SetFocus()
+    end)
+end
+
+local function RefreshExportFrameText()
+    if not exportFrame or not exportFrame.edit then
+        return
+    end
+
+    exportFrame.edit:SetText(BuildCharacterSetsExport())
+    exportFrame.edit:SetFocus()
+    exportFrame.edit:HighlightText()
+end
+
+local function CreateExportFrame()
+    exportFrame = CreateFrame("Frame", "PlutocraseekerExportFrame", UIParent, Template())
+    exportFrame:SetSize(560, 420)
+    exportFrame:SetPoint("CENTER")
+    exportFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+    exportFrame:SetFrameLevel(120)
+    if exportFrame.SetToplevel then
+        exportFrame:SetToplevel(true)
+    end
+    exportFrame:EnableMouse(true)
+    exportFrame:SetMovable(true)
+    exportFrame:RegisterForDrag("LeftButton")
+    exportFrame:SetScript("OnDragStart", exportFrame.StartMoving)
+    exportFrame:SetScript("OnDragStop", exportFrame.StopMovingOrSizing)
+    exportFrame:Hide()
+    ApplyBackdrop(exportFrame, colors.bg)
+    RegisterEscapeFrame("PlutocraseekerExportFrame")
+
+    exportFrame.title = CreateText(exportFrame, "Export Character Sets", 18, colors.accent)
+    exportFrame.title:SetPoint("TOPLEFT", 18, -16)
+
+    exportFrame.subtitle = CreateText(exportFrame, "Copy this text to back up or move this character's loot sets.", 11, colors.muted)
+    exportFrame.subtitle:SetPoint("TOPLEFT", exportFrame.title, "BOTTOMLEFT", 0, -2)
+    exportFrame.subtitle:SetWidth(460)
+
+    exportFrame.close = CreateButton(exportFrame, "X", 28, 26)
+    exportFrame.close:SetPoint("TOPRIGHT", -12, -12)
+    exportFrame.close:SetScript("OnClick", function()
+        exportFrame:Hide()
+    end)
+
+    local editPanel = CreateFrame("Frame", nil, exportFrame, Template())
+    editPanel:SetPoint("TOPLEFT", 18, -64)
+    editPanel:SetSize(524, 286)
+    ApplyBackdrop(editPanel, { 0.045, 0.052, 0.06, 1 })
+
+    exportFrame.scroll = CreateFrame("ScrollFrame", nil, editPanel, "UIPanelScrollFrameTemplate")
+    exportFrame.scroll:SetPoint("TOPLEFT", 8, -8)
+    exportFrame.scroll:SetPoint("BOTTOMRIGHT", -28, 8)
+
+    exportFrame.edit = CreateFrame("EditBox", nil, exportFrame.scroll)
+    exportFrame.edit:SetMultiLine(true)
+    exportFrame.edit:SetAutoFocus(false)
+    exportFrame.edit:SetFont(STANDARD_TEXT_FONT, 12, "")
+    exportFrame.edit:SetTextColor(unpack(colors.text))
+    exportFrame.edit:SetJustifyH("LEFT")
+    exportFrame.edit:SetJustifyV("TOP")
+    exportFrame.edit:SetWidth(480)
+    exportFrame.edit:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+    end)
+    exportFrame.scroll:SetScrollChild(exportFrame.edit)
+
+    exportFrame.selectAll = CreateButton(exportFrame, "Select All", 92, 30)
+    exportFrame.selectAll:SetPoint("BOTTOMRIGHT", -18, 18)
+    exportFrame.selectAll:SetScript("OnClick", function()
+        exportFrame.edit:SetFocus()
+        exportFrame.edit:HighlightText()
+    end)
+
+    exportFrame.refresh = CreateButton(exportFrame, "Refresh", 82, 30)
+    exportFrame.refresh:SetPoint("RIGHT", exportFrame.selectAll, "LEFT", -8, 0)
+    exportFrame.refresh:SetScript("OnClick", function()
+        RefreshExportFrameText()
+    end)
+
+    exportFrame.done = CreateButton(exportFrame, "Close", 72, 30)
+    exportFrame.done:SetPoint("RIGHT", exportFrame.refresh, "LEFT", -8, 0)
+    exportFrame.done:SetScript("OnClick", function()
+        exportFrame:Hide()
+    end)
+
+    exportFrame:SetScript("OnShow", function()
+        RefreshExportFrameText()
+    end)
+end
+
 local function CreateConfirmDeleteFrame()
     confirmDeleteFrame = CreateFrame("Frame", "PlutocraseekerConfirmDeleteFrame", UIParent, Template())
     confirmDeleteFrame:SetSize(380, 160)
@@ -1197,6 +1796,165 @@ local function CreateConfirmDeleteFrame()
         itemOffset = 0
         Plutocraseeker.DeleteSelectedSet()
     end)
+end
+
+local function CreateReceivedItemFrame()
+    receivedItemFrame = CreateFrame("Frame", "PlutocraseekerReceivedItemFrame", UIParent, Template())
+    receivedItemFrame:SetSize(ALERT_FRAME_WIDTH, 240)
+    receivedItemFrame:SetPoint("CENTER")
+    receivedItemFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+    receivedItemFrame:SetFrameLevel(135)
+    if receivedItemFrame.SetToplevel then
+        receivedItemFrame:SetToplevel(true)
+    end
+    receivedItemFrame:EnableMouse(true)
+    receivedItemFrame:SetMovable(true)
+    receivedItemFrame:RegisterForDrag("LeftButton")
+    receivedItemFrame:SetScript("OnDragStart", receivedItemFrame.StartMoving)
+    receivedItemFrame:SetScript("OnDragStop", receivedItemFrame.StopMovingOrSizing)
+    receivedItemFrame:Hide()
+    receivedItemFrame:SetScript("OnHide", function(self)
+        if self.suppressNextPrompt then
+            self.suppressNextPrompt = nil
+            return
+        end
+        if UI.ShowNextReceivedItemPrompt then
+            UI.ShowNextReceivedItemPrompt()
+        end
+    end)
+    ApplyBackdrop(receivedItemFrame, colors.bg)
+    RegisterEscapeFrame("PlutocraseekerReceivedItemFrame")
+
+    receivedItemFrame.title = CreateText(receivedItemFrame, "Received Watched Item", 18, colors.accent)
+    receivedItemFrame.title:SetPoint("TOPLEFT", 18, -16)
+
+    receivedItemFrame.close = CreateButton(receivedItemFrame, "X", 28, 26)
+    receivedItemFrame.close:SetPoint("TOPRIGHT", -12, -12)
+    receivedItemFrame.close:SetScript("OnClick", function()
+        receivedItemFrame:Hide()
+    end)
+
+    receivedItemFrame.itemText = CreateText(receivedItemFrame, "", 13, colors.text)
+    receivedItemFrame.itemText:SetPoint("TOPLEFT", receivedItemFrame.title, "BOTTOMLEFT", 0, -12)
+    receivedItemFrame.itemText:SetWidth(450)
+
+    receivedItemFrame.message = CreateText(receivedItemFrame, "Check the sets this loot satisfies. Checked sets will stop watching this item.", 11, colors.muted)
+    receivedItemFrame.message:SetPoint("TOPLEFT", receivedItemFrame.itemText, "BOTTOMLEFT", 0, -8)
+    receivedItemFrame.message:SetWidth(450)
+
+    receivedItemFrame.rows = {}
+
+    receivedItemFrame.keep = CreateButton(receivedItemFrame, "Keep Watching", 112, 30)
+    receivedItemFrame.keep:SetPoint("BOTTOMRIGHT", -18, 18)
+    receivedItemFrame.keep:SetScript("OnClick", function()
+        receivedItemFrame:Hide()
+    end)
+
+    receivedItemFrame.remove = CreateButton(receivedItemFrame, "Remove Checked", 128, 30)
+    receivedItemFrame.remove:SetPoint("RIGHT", receivedItemFrame.keep, "LEFT", -8, 0)
+    receivedItemFrame.remove:SetScript("OnClick", function()
+        local removed = 0
+        local itemId = receivedItemFrame.itemId
+        for _, row in ipairs(receivedItemFrame.rows or {}) do
+            if row:IsShown() and row.setId and row:GetChecked() then
+                if Plutocraseeker.RemoveItemFromSet and Plutocraseeker.RemoveItemFromSet(row.setId, itemId) then
+                    removed = removed + 1
+                end
+            end
+        end
+
+        if Plutocraseeker.Print then
+            if removed > 0 then
+                Plutocraseeker.Print("Removed " .. tostring(receivedItemFrame.itemName or "item") .. " from " .. tostring(removed) .. " set(s).")
+            else
+                Plutocraseeker.Print("No sets were changed.")
+            end
+        end
+        receivedItemFrame:Hide()
+    end)
+end
+
+local function DisplayReceivedItemPrompt(data)
+    if not receivedItemFrame then
+        CreateReceivedItemFrame()
+    end
+
+    local itemId = data.itemId
+    local sets = data.sets or {}
+
+    receivedItemFrame.itemId = itemId
+    receivedItemFrame.itemName = data.itemText or Plutocraseeker.GetItemName(itemId)
+    receivedItemFrame.itemText:SetText("Received: " .. tostring(receivedItemFrame.itemName))
+    if #receivedItemQueue > 0 then
+        receivedItemFrame.message:SetText("Check the sets this loot satisfies. " .. tostring(#receivedItemQueue) .. " more received item(s) are waiting.")
+    else
+        receivedItemFrame.message:SetText("Check the sets this loot satisfies. Checked sets will stop watching this item.")
+    end
+
+    local rowStart = -92
+    local rowHeight = 26
+    for index, set in ipairs(sets) do
+        local row = receivedItemFrame.rows[index]
+        if not row then
+            row = CreateCheckbox(receivedItemFrame, "", 440)
+            receivedItemFrame.rows[index] = row
+        end
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", 18, rowStart - ((index - 1) * rowHeight))
+        row.text:SetText(tostring(set.name or "Unnamed set"))
+        row.setId = set.id
+        row:SetChecked(false)
+        row:Show()
+    end
+
+    for index = #sets + 1, #receivedItemFrame.rows do
+        local row = receivedItemFrame.rows[index]
+        row.setId = nil
+        row:Hide()
+    end
+
+    receivedItemFrame:SetHeight(math.min(190 + (#sets * rowHeight), 460))
+    if receivedItemFrame.Raise then
+        receivedItemFrame:Raise()
+    end
+    receivedItemFrame:Show()
+    PositionAlertStack()
+end
+
+function UI.ShowNextReceivedItemPrompt()
+    if not receivedItemFrame then
+        CreateReceivedItemFrame()
+    end
+
+    if receivedItemFrame:IsShown() then
+        return
+    end
+
+    local data = table.remove(receivedItemQueue, 1)
+    if data then
+        DisplayReceivedItemPrompt(data)
+    end
+end
+
+function UI.ShowReceivedItemPrompt(itemId, itemText, sets)
+    itemId = tonumber(itemId)
+    sets = sets or {}
+    if not itemId or #sets == 0 then
+        return
+    end
+
+    receivedItemQueue[#receivedItemQueue + 1] = {
+        itemId = itemId,
+        itemText = itemText,
+        sets = sets,
+    }
+
+    if UI.ShowNextReceivedItemPrompt then
+        UI.ShowNextReceivedItemPrompt()
+    end
+    if receivedItemFrame and receivedItemFrame:IsShown() and receivedItemFrame.message and #receivedItemQueue > 0 then
+        receivedItemFrame.message:SetText("Check the sets this loot satisfies. " .. tostring(#receivedItemQueue) .. " more received item(s) are waiting.")
+    end
 end
 
 local function ShowDeleteSetConfirmation()
@@ -1242,6 +2000,18 @@ local function CreateMainFrame()
         end
         if wowheadImportFrame then
             wowheadImportFrame:Hide()
+        end
+        if characterImportFrame then
+            characterImportFrame:Hide()
+        end
+        if exportFrame then
+            exportFrame:Hide()
+        end
+        if receivedItemFrame then
+            if receivedItemFrame:IsShown() then
+                receivedItemFrame.suppressNextPrompt = true
+            end
+            receivedItemFrame:Hide()
         end
         if confirmDeleteFrame then
             confirmDeleteFrame:Hide()
@@ -1307,7 +2077,7 @@ local function CreateMainFrame()
         mainFrame.newSetName:SetText("New set")
     end)
 
-    mainFrame.importWowSims = CreateButton(mainFrame, "Import WowSims", 128, 28)
+    mainFrame.importWowSims = CreateButton(mainFrame, "Import WoWSims", 128, 28)
     mainFrame.importWowSims:SetPoint("LEFT", mainFrame.newSet, "RIGHT", 7, 0)
     SetButtonTooltip(mainFrame.importWowSims, "Import WowSims", "Paste a WoWSims JSON export and create a set from its equipped items.")
     mainFrame.importWowSims:SetScript("OnClick", function()
@@ -1484,7 +2254,7 @@ end
 
 local function CreateConfigPanel()
     configFrame = CreateFrame("Frame", "PlutocraseekerConfigFrame", UIParent, Template())
-    configFrame:SetSize(470, 310)
+    configFrame:SetSize(470, 430)
     configFrame:SetPoint("CENTER")
     configFrame:SetFrameStrata("FULLSCREEN_DIALOG")
     configFrame:SetFrameLevel(100)
@@ -1569,6 +2339,36 @@ local function CreateConfigPanel()
     end)
     configFrame.showAnchors:SetScript("OnClick", function()
         ShowAnchorOverlay()
+    end)
+
+    local characterSection = CreateFrame("Frame", nil, configFrame, Template())
+    characterSection:SetPoint("TOPLEFT", alertsSection, "BOTTOMLEFT", 0, -12)
+    characterSection:SetSize(438, 104)
+    ApplyBackdrop(characterSection, colors.panel)
+
+    characterSection.title = CreateText(characterSection, "Character Sets", 13, colors.accent)
+    characterSection.title:SetPoint("TOPLEFT", 12, -10)
+
+    characterSection.description = CreateText(characterSection, "Back up or move this character's Plutocraseeker sets.", 11, colors.muted)
+    characterSection.description:SetPoint("TOPLEFT", characterSection.title, "BOTTOMLEFT", 0, -6)
+    characterSection.description:SetWidth(400)
+
+    configFrame.importCharacterSets = CreateButton(characterSection, "Import", 82, 28)
+    configFrame.importCharacterSets:SetPoint("BOTTOMLEFT", 12, 12)
+    SetButtonTooltip(configFrame.importCharacterSets, "Import Character Sets", "Replace this character's sets from a Plutocraseeker character export.")
+    configFrame.importCharacterSets:SetScript("OnClick", function()
+        if UI.ToggleCharacterImport then
+            UI.ToggleCharacterImport()
+        end
+    end)
+
+    configFrame.exportCharacterSets = CreateButton(characterSection, "Export", 82, 28)
+    configFrame.exportCharacterSets:SetPoint("LEFT", configFrame.importCharacterSets, "RIGHT", 8, 0)
+    SetButtonTooltip(configFrame.exportCharacterSets, "Export Character Sets", "Copy this character's sets as portable backup text.")
+    configFrame.exportCharacterSets:SetScript("OnClick", function()
+        if UI.ToggleExport then
+            UI.ToggleExport()
+        end
     end)
 
     configFrame:SetScript("OnShow", function()
@@ -1758,6 +2558,55 @@ function UI.ToggleWowheadImport()
     wowheadImportFrame.edit:SetFocus()
 end
 
+function UI.ToggleCharacterImport()
+    if not mainFrame then
+        UI.Initialize()
+    end
+
+    if not characterImportFrame then
+        CreateCharacterImportFrame()
+    end
+
+    if characterImportFrame:IsShown() then
+        characterImportFrame:Hide()
+        return
+    end
+
+    characterImportFrame:ClearAllPoints()
+    characterImportFrame:SetPoint("CENTER", mainFrame, "CENTER", 0, 0)
+    characterImportFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+    characterImportFrame:SetFrameLevel((mainFrame:GetFrameLevel() or 1) + 120)
+    if characterImportFrame.Raise then
+        characterImportFrame:Raise()
+    end
+    characterImportFrame:Show()
+    characterImportFrame.edit:SetFocus()
+end
+
+function UI.ToggleExport()
+    if not mainFrame then
+        UI.Initialize()
+    end
+
+    if not exportFrame then
+        CreateExportFrame()
+    end
+
+    if exportFrame:IsShown() then
+        exportFrame:Hide()
+        return
+    end
+
+    exportFrame:ClearAllPoints()
+    exportFrame:SetPoint("CENTER", mainFrame, "CENTER", 0, 0)
+    exportFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+    exportFrame:SetFrameLevel((mainFrame:GetFrameLevel() or 1) + 120)
+    if exportFrame.Raise then
+        exportFrame:Raise()
+    end
+    exportFrame:Show()
+end
+
 function UI.OpenLootBrowser()
     if not mainFrame then
         UI.Initialize()
@@ -1775,7 +2624,10 @@ function UI.Initialize()
         CreateConfigPanel()
         CreateImportFrame()
         CreateWowheadImportFrame()
+        CreateCharacterImportFrame()
+        CreateExportFrame()
         CreateConfirmDeleteFrame()
+        CreateReceivedItemFrame()
     end
     UI.Refresh()
 end

@@ -7,6 +7,7 @@
 ## Author: Sinaesthetic
 ## Version: 0.1.0
 ## SavedVariables: PlutocraseekerDB
+## SavedVariablesPerCharacter: PlutocraseekerCharacterDB
 ## OptionalDeps: AtlasLootClassic, AtlasLootClassic_DungeonsAndRaids
 
 Core.lua
