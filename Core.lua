@@ -14,6 +14,7 @@ local ACCOUNT_DEFAULT_DB = {
     minimap = {},
     starredSources = {},
     itemSearchIndex = {},
+    itemVariantAliases = {},
     config = {
         alertOnMention = true,
         onlyLootMasterAlerts = true,
@@ -431,6 +432,59 @@ function Plutocraseeker.GetItemName(itemId)
     return "Item " .. tostring(itemId)
 end
 
+local function ExtractItemName(value)
+    local text = tostring(value or "")
+    local bracketName = text:match("%[([^%]]+)%]")
+    if bracketName and bracketName ~= "" then
+        return bracketName
+    end
+    return text
+end
+
+local function NormalizeComparableItemName(value)
+    local text = ExtractItemName(value)
+    text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+    text = text:lower()
+    text = text:gsub("%f[%a]warforged%f[%A]", "")
+    text = text:gsub("%f[%a]thunderforged%f[%A]", "")
+    text = text:gsub("%f[%a]heroic%f[%A]", "")
+    text = text:gsub("[%'`]", "")
+    text = text:gsub("[^%w]+", " ")
+    text = text:gsub("^%s+", ""):gsub("%s+$", "")
+    text = text:gsub("%s+", " ")
+    return text
+end
+
+local function GetIndexedItemName(itemId)
+    local index = Plutocraseeker.db and Plutocraseeker.db.itemSearchIndex
+    local indexedItem = index and index.itemsById and index.itemsById[tonumber(itemId)]
+    return indexedItem and indexedItem.name or nil
+end
+
+local function GetComparableItemName(itemId, value, requestIfMissing)
+    if value and tostring(value) ~= "" then
+        local normalized = NormalizeComparableItemName(value)
+        if normalized ~= "" and not normalized:match("^item %d+$") then
+            return normalized
+        end
+    end
+
+    local name = Plutocraseeker.GetItemInfo(itemId)
+    if name and name ~= "" then
+        return NormalizeComparableItemName(name)
+    end
+
+    local indexedName = GetIndexedItemName(itemId)
+    if indexedName and indexedName ~= "" then
+        return NormalizeComparableItemName(indexedName)
+    end
+
+    if requestIfMissing ~= false then
+        Plutocraseeker.RequestItemInfo(itemId)
+    end
+    return nil
+end
+
 function Plutocraseeker.GetDifficultyPrefixForItem(itemId, value, requestIfMissing)
     if not itemId then
         return nil
@@ -626,6 +680,102 @@ local function FindItem(set, itemId)
         if item.id == itemId then
             return index, item
         end
+    end
+
+    return nil
+end
+
+local function HasExactTrackedItem(itemId, enabledOnly)
+    itemId = tonumber(itemId)
+    if not itemId or not Plutocraseeker.db then
+        return false
+    end
+
+    for _, set in ipairs(Plutocraseeker.db.sets or {}) do
+        if (not enabledOnly or set.enabled) and FindItem(set, itemId) then
+            return true
+        end
+    end
+    return false
+end
+
+local function GetVariantAlias(itemId)
+    local aliases = Plutocraseeker.accountDB and Plutocraseeker.accountDB.itemVariantAliases
+        or Plutocraseeker.db and Plutocraseeker.db.itemVariantAliases
+    return aliases and tonumber(aliases[tonumber(itemId)])
+end
+
+local function SetVariantAlias(variantItemId, trackedItemId)
+    variantItemId = tonumber(variantItemId)
+    trackedItemId = tonumber(trackedItemId)
+    if not variantItemId or not trackedItemId or variantItemId == trackedItemId then
+        return
+    end
+
+    local db = Plutocraseeker.accountDB or Plutocraseeker.db
+    if not db then
+        return
+    end
+
+    db.itemVariantAliases = db.itemVariantAliases or {}
+    if tonumber(db.itemVariantAliases[variantItemId]) ~= trackedItemId then
+        db.itemVariantAliases[variantItemId] = trackedItemId
+        Plutocraseeker.ClearTooltipStatusCache()
+    end
+end
+
+local function PrefixesCompatible(left, right)
+    if not left or left == "" or not right or right == "" then
+        return true
+    end
+    return left == right
+end
+
+function Plutocraseeker.ResolveTrackedItemId(itemId, value, enabledOnly)
+    itemId = tonumber(itemId)
+    if not itemId or not Plutocraseeker.db then
+        return nil
+    end
+
+    if HasExactTrackedItem(itemId, enabledOnly) then
+        return itemId
+    end
+
+    local alias = GetVariantAlias(itemId)
+    if alias and HasExactTrackedItem(alias, enabledOnly) then
+        return alias, true
+    end
+
+    local itemName = GetComparableItemName(itemId, value, false)
+    if not itemName or itemName == "" then
+        Plutocraseeker.RequestItemInfo(itemId)
+        return nil
+    end
+
+    local itemPrefix = Plutocraseeker.GetDifficultyPrefixForItem(itemId, value, false)
+    local candidates = {}
+    local seen = {}
+    for _, set in ipairs(Plutocraseeker.db.sets or {}) do
+        if not enabledOnly or set.enabled then
+            for _, trackedItem in ipairs(set.items or {}) do
+                local trackedItemId = tonumber(trackedItem and trackedItem.id)
+                if trackedItemId and not seen[trackedItemId] then
+                    local trackedName = GetComparableItemName(trackedItemId, nil, false)
+                    if trackedName and trackedName == itemName then
+                        local trackedPrefix = trackedItem.difficultyPrefix or Plutocraseeker.GetDifficultyPrefixForItem(trackedItemId, nil, false)
+                        if PrefixesCompatible(itemPrefix, trackedPrefix) then
+                            seen[trackedItemId] = true
+                            candidates[#candidates + 1] = trackedItemId
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if #candidates == 1 then
+        SetVariantAlias(itemId, candidates[1])
+        return candidates[1], true
     end
 
     return nil
@@ -839,13 +989,7 @@ function Plutocraseeker.IsTrackedItem(itemId)
         return false
     end
 
-    for _, set in ipairs(Plutocraseeker.db.sets or {}) do
-        if FindItem(set, itemId) then
-            return true
-        end
-    end
-
-    return false
+    return Plutocraseeker.ResolveTrackedItemId(itemId) and true or false
 end
 
 function Plutocraseeker.BackfillTrackedItemDifficulty(itemId, requestIfMissing)
@@ -1016,23 +1160,28 @@ function Plutocraseeker.RemoveItemFromSet(setId, itemId)
     return true
 end
 
-function Plutocraseeker.GetSetsContainingItem(itemId, enabledOnly)
+function Plutocraseeker.GetSetsContainingItem(itemId, enabledOnly, value)
     local matches = {}
     itemId = tonumber(itemId)
     if not itemId or not Plutocraseeker.db then
         return matches
     end
 
+    local trackedItemId = Plutocraseeker.ResolveTrackedItemId(itemId, value, enabledOnly)
+    if not trackedItemId then
+        return matches
+    end
+
     for _, set in ipairs(Plutocraseeker.db.sets or {}) do
-        if (not enabledOnly or set.enabled) and FindItem(set, itemId) then
+        if (not enabledOnly or set.enabled) and FindItem(set, trackedItemId) then
             matches[#matches + 1] = set
         end
     end
     return matches
 end
 
-function Plutocraseeker.GetMatchingSets(itemId)
-    return Plutocraseeker.GetSetsContainingItem(itemId, true)
+function Plutocraseeker.GetMatchingSets(itemId, value)
+    return Plutocraseeker.GetSetsContainingItem(itemId, true, value)
 end
 
 local function GetBagItemId(bag, slot)
@@ -1054,13 +1203,34 @@ local function GetBagItemId(bag, slot)
     return GetItemIdFromLinkOrText(link)
 end
 
+local function GetBagItemLink(bag, slot)
+    if C_Container and C_Container.GetContainerItemLink then
+        return C_Container.GetContainerItemLink(bag, slot)
+    elseif GetContainerItemLink then
+        return GetContainerItemLink(bag, slot)
+    end
+    return nil
+end
+
+local function AddInventorySnapshotItem(items, itemId, link)
+    itemId = tonumber(itemId)
+    if not itemId then
+        return
+    end
+
+    items[itemId] = true
+    local trackedItemId = Plutocraseeker.ResolveTrackedItemId(itemId, link)
+    if trackedItemId then
+        items[trackedItemId] = true
+    end
+end
+
 local function BuildPlayerInventorySnapshot()
     local items = {}
     for slot = 1, 19 do
         local itemId = GetInventoryItemID("player", slot)
-        if itemId then
-            items[itemId] = true
-        end
+        local link = GetInventoryItemLink and GetInventoryItemLink("player", slot) or nil
+        AddInventorySnapshotItem(items, itemId, link)
     end
 
     for bag = 0, 4 do
@@ -1073,9 +1243,7 @@ local function BuildPlayerInventorySnapshot()
 
         for slot = 1, slots do
             local itemId = GetBagItemId(bag, slot)
-            if itemId then
-                items[itemId] = true
-            end
+            AddInventorySnapshotItem(items, itemId, GetBagItemLink(bag, slot))
         end
     end
 
@@ -1242,7 +1410,8 @@ local function AddTooltipStatus(tooltip)
     local now = GetTime and GetTime() or time()
     local cached = Plutocraseeker.tooltipStatusCache[itemId]
     if not cached or now - cached.time >= Plutocraseeker.playerItemCacheTTL then
-        local matches = Plutocraseeker.GetMatchingSets(itemId)
+        local trackedItemId = Plutocraseeker.ResolveTrackedItemId(itemId, link) or itemId
+        local matches = Plutocraseeker.GetMatchingSets(itemId, link)
         if #matches == 0 then
             cached = {
                 time = now,
@@ -1253,7 +1422,7 @@ local function AddTooltipStatus(tooltip)
                 time = now,
                 hasMatches = true,
                 setText = JoinSetNames(matches),
-                hasItem = Plutocraseeker.PlayerHasItem(itemId),
+                hasItem = Plutocraseeker.PlayerHasItem(trackedItemId),
             }
         end
         Plutocraseeker.tooltipStatusCache[itemId] = cached
@@ -1289,7 +1458,12 @@ local function InitializeTooltipHooks()
 end
 
 local function BuildAlertMatch(itemId, link, source)
-    local matches = Plutocraseeker.GetMatchingSets(itemId)
+    local trackedItemId, isVariant = Plutocraseeker.ResolveTrackedItemId(itemId, link)
+    if not trackedItemId then
+        return nil
+    end
+
+    local matches = Plutocraseeker.GetMatchingSets(itemId, link)
     if #matches == 0 then
         return nil
     end
@@ -1302,7 +1476,7 @@ local function BuildAlertMatch(itemId, link, source)
 
     if not alertSource.difficultyPrefix then
         for _, set in ipairs(Plutocraseeker.db.sets or {}) do
-            local _, item = FindItem(set, itemId)
+            local _, item = FindItem(set, trackedItemId)
             if item and item.difficultyPrefix then
                 alertSource.difficultyPrefix = item.difficultyPrefix
                 break
@@ -1312,10 +1486,12 @@ local function BuildAlertMatch(itemId, link, source)
 
     return {
         itemId = itemId,
+        trackedItemId = trackedItemId,
+        isVariant = isVariant,
         itemText = link or Plutocraseeker.GetItemName(itemId),
         setText = setText,
         source = alertSource,
-        cooldownKey = tostring(itemId) .. ":" .. setText,
+        cooldownKey = tostring(trackedItemId) .. ":" .. setText,
     }
 end
 
@@ -1517,10 +1693,11 @@ local function PromptForReceivedLoot(message)
         local itemId = tonumber(itemString)
         if itemId and not seen[itemId] then
             seen[itemId] = true
-            local sets = Plutocraseeker.GetSetsContainingItem(itemId, true)
+            local link = message:match("(|c%x+|Hitem:" .. itemString .. ":[^|]+|h%[[^%]]+%]|h|r)")
+            local trackedItemId = Plutocraseeker.ResolveTrackedItemId(itemId, link)
+            local sets = Plutocraseeker.GetSetsContainingItem(itemId, true, link)
             if #sets > 0 and Plutocraseeker.UI and Plutocraseeker.UI.ShowReceivedItemPrompt then
-                local link = message:match("(|c%x+|Hitem:" .. itemString .. ":[^|]+|h%[[^%]]+%]|h|r)")
-                Plutocraseeker.UI.ShowReceivedItemPrompt(itemId, link or Plutocraseeker.GetItemName(itemId), sets)
+                Plutocraseeker.UI.ShowReceivedItemPrompt(trackedItemId or itemId, link or Plutocraseeker.GetItemName(itemId), sets)
             end
         end
     end
@@ -1673,7 +1850,7 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
             if Plutocraseeker.UI and Plutocraseeker.UI.Initialize then
                 Plutocraseeker.UI.Initialize()
             end
-            Print("loaded. Type /ps to manage loot sets.")
+            Print("loaded. Type /ps to manage loot sets or /ps help for commands.")
         end
         return
     end
@@ -1737,6 +1914,22 @@ end)
 SLASH_PLUTOCRASEEKER1 = "/plutocraseeker"
 SLASH_PLUTOCRASEEKER2 = "/ps"
 
+local function ShowSlashHelp()
+    Print("Commands:")
+    Print("/ps - Open Plutocraseeker.")
+    Print("/ps add <item link or id> - Add an item to the selected set.")
+    Print("/ps new <set name> - Create a new character set.")
+    Print("/ps scanboss - Scan your current target for watched boss loot.")
+    Print("/ps browse or /ps loot - Open the loot browser.")
+    Print("/ps atlasloot or /ps al - Open AtlasLootClassic.")
+    Print("/ps refresh - Refresh tracked item difficulty data.")
+    Print("/ps test loot_alert - Show a test boss loot alert.")
+    Print("/ps test item_linked - Show a test item linked alert.")
+    Print("/ps test loot_roll - Show a test loot roll alert.")
+    Print("/ps test item_received - Show a test item received prompt.")
+    Print("/ps debug item <item link or id> - Show item variant matching details.")
+end
+
 local function FindTestWatchedItem()
     local selectedSet = Plutocraseeker.GetSelectedSet and Plutocraseeker.GetSelectedSet()
     if selectedSet and selectedSet.enabled and type(selectedSet.items) == "table" then
@@ -1762,18 +1955,57 @@ local function FindTestWatchedItem()
     return nil
 end
 
+local function CollectTestWatchedItems(limit)
+    local items = {}
+    local seen = {}
+
+    local function addFromSet(set)
+        if not set or not set.enabled or type(set.items) ~= "table" then
+            return
+        end
+
+        for _, item in ipairs(set.items) do
+            local itemId = tonumber(item and item.id)
+            if itemId and not seen[itemId] then
+                seen[itemId] = true
+                items[#items + 1] = {
+                    itemId = itemId,
+                    item = item,
+                }
+                if limit and #items >= limit then
+                    return
+                end
+            end
+        end
+    end
+
+    addFromSet(Plutocraseeker.GetSelectedSet and Plutocraseeker.GetSelectedSet())
+    if not limit or #items < limit then
+        for _, set in ipairs(Plutocraseeker.db and Plutocraseeker.db.sets or {}) do
+            addFromSet(set)
+            if limit and #items >= limit then
+                break
+            end
+        end
+    end
+
+    return items
+end
+
 local function TestReceivedItemPrompt()
     if not Plutocraseeker.UI or not Plutocraseeker.UI.ShowReceivedItemPrompt then
         Print("UI is not loaded.")
         return
     end
 
-    local itemId = FindTestWatchedItem()
-    if not itemId then
+    local items = CollectTestWatchedItems(2)
+    local first = items[1]
+    if not first then
         Print("Add at least one watched item before testing received-item cleanup.")
         return
     end
 
+    local itemId = first.itemId
     local sets = Plutocraseeker.GetSetsContainingItem(itemId, true)
     if #sets == 0 then
         Print("The test item is not in any enabled watched set.")
@@ -1781,6 +2013,24 @@ local function TestReceivedItemPrompt()
     end
 
     Plutocraseeker.UI.ShowReceivedItemPrompt(itemId, Plutocraseeker.GetItemName(itemId), sets)
+    if not items[2] then
+        Print("Add a second distinct watched item to test late append behavior.")
+        return
+    end
+
+    local function showLateItem()
+        local lateItemId = items[2].itemId
+        local lateSets = Plutocraseeker.GetSetsContainingItem(lateItemId, true)
+        if #lateSets > 0 then
+            Plutocraseeker.UI.ShowReceivedItemPrompt(lateItemId, Plutocraseeker.GetItemName(lateItemId), lateSets)
+        end
+    end
+
+    if C_Timer and C_Timer.After then
+        C_Timer.After(1, showLateItem)
+    else
+        showLateItem()
+    end
 end
 
 local function TestLootAlert()
@@ -1815,7 +2065,7 @@ local function TestItemLinkedAlert()
 
     local itemId, item = FindTestWatchedItem()
     if not itemId then
-        Print("Add at least one enabled watched item before testing item-link alerts.")
+        Print("Add at least one enabled watched item before testing item linked alerts.")
         return
     end
 
@@ -1839,7 +2089,7 @@ local function TestLootRollAlert()
 
     local itemId, item = FindTestWatchedItem()
     if not itemId then
-        Print("Add at least one enabled watched item before testing loot-roll alerts.")
+        Print("Add at least one enabled watched item before testing loot roll alerts.")
         return
     end
 
@@ -1854,11 +2104,46 @@ local function TestLootRollAlert()
     })
 end
 
+local function DebugItemMatch(value)
+    if not value or value == "" then
+        Print("Usage: /ps debug item <item link or id>")
+        return
+    end
+
+    local itemId = GetItemIdFromLinkOrText(value)
+    if not itemId then
+        Print("Paste an item link or item ID to debug.")
+        return
+    end
+
+    local trackedItemId, isVariant = Plutocraseeker.ResolveTrackedItemId(itemId, value)
+    local detectedPrefix = Plutocraseeker.GetDifficultyPrefixForItem(itemId, value, false) or "unknown"
+    local comparableName = GetComparableItemName(itemId, value, false) or "unknown"
+    local sets = Plutocraseeker.GetSetsContainingItem(itemId, true, value)
+
+    Print("Debug item: dropped ID " .. tostring(itemId) .. ", name key \"" .. tostring(comparableName) .. "\", difficulty " .. tostring(detectedPrefix) .. ".")
+    if trackedItemId then
+        Print("Matched tracked ID " .. tostring(trackedItemId) .. (isVariant and " via variant matching." or " exactly."))
+    else
+        Print("No tracked item match found.")
+    end
+
+    if #sets > 0 then
+        Print("Matched set(s): " .. JoinSetNames(sets) .. ".")
+    else
+        Print("Matched set(s): none.")
+    end
+end
+
 SlashCmdList.PLUTOCRASEEKER = function(input)
     local command, rest = tostring(input or ""):match("^%s*(%S*)%s*(.-)%s*$")
     command = command and command:lower() or ""
 
-    if command == "add" and rest ~= "" then
+    if command == "" then
+        Plutocraseeker.ToggleUI()
+    elseif command == "help" or command == "?" then
+        ShowSlashHelp()
+    elseif command == "add" and rest ~= "" then
         Plutocraseeker.AddItemToSelectedSet(rest)
     elseif command == "refresh" then
         Plutocraseeker.RefreshSelectedSetDifficulties(true)
@@ -1886,7 +2171,14 @@ SlashCmdList.PLUTOCRASEEKER = function(input)
         else
             Print("Unknown test. Try /ps test loot_alert, /ps test item_linked, /ps test loot_roll, or /ps test item_received.")
         end
+    elseif command == "debug" then
+        local debugCommand, debugRest = tostring(rest or ""):match("^%s*(%S*)%s*(.-)%s*$")
+        if (debugCommand or ""):lower() == "item" then
+            DebugItemMatch(debugRest)
+        else
+            Print("Unknown debug command. Try /ps debug item <item link or id>.")
+        end
     else
-        Plutocraseeker.ToggleUI()
+        Print("Unknown command. Type /ps help for commands.")
     end
 end

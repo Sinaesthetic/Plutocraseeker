@@ -15,6 +15,7 @@ local exportFrame
 local confirmDeleteFrame
 local receivedItemFrame
 local receivedItemQueue = {}
+local receivedItemHandledAt = {}
 local setRows = {}
 local itemRows = {}
 local itemOffset = 0
@@ -27,6 +28,7 @@ local ALERT_MAX_HEIGHT = 420
 local ALERT_FRAME_WIDTH = 500
 local ALERT_ITEM_VIEW_HEIGHT = 184
 local ALERT_DEFAULT_TOP_OFFSET = -180
+local RECEIVED_ITEM_DEDUPE_SECONDS = 5
 local colors = {
     bg = { 0.055, 0.065, 0.075, 0.96 },
     panel = { 0.085, 0.095, 0.11, 0.96 },
@@ -1845,6 +1847,70 @@ local function CreateConfirmDeleteFrame()
     end)
 end
 
+local function GetReceivedItemPromptTime()
+    if GetTime then
+        return GetTime()
+    end
+    return time()
+end
+
+local function MarkReceivedItemHandled(itemId)
+    itemId = tonumber(itemId)
+    if itemId then
+        receivedItemHandledAt[itemId] = GetReceivedItemPromptTime()
+    end
+end
+
+local function MarkReceivedItemPromptsHandled(prompts)
+    for _, prompt in ipairs(prompts or {}) do
+        MarkReceivedItemHandled(prompt and prompt.itemId)
+    end
+end
+
+local function WasReceivedItemRecentlyHandled(itemId)
+    itemId = tonumber(itemId)
+    if not itemId then
+        return false
+    end
+
+    local handledAt = receivedItemHandledAt[itemId]
+    if not handledAt then
+        return false
+    end
+
+    return GetReceivedItemPromptTime() - handledAt < RECEIVED_ITEM_DEDUPE_SECONDS
+end
+
+local function GetCurrentReceivedItemSets(itemId, fallbackSets, itemText)
+    if Plutocraseeker.GetSetsContainingItem then
+        return Plutocraseeker.GetSetsContainingItem(itemId, true, itemText)
+    end
+    return fallbackSets or {}
+end
+
+local function IsReceivedItemPromptPending(itemId)
+    itemId = tonumber(itemId)
+    if not itemId then
+        return false
+    end
+
+    if receivedItemFrame and receivedItemFrame:IsShown() then
+        for _, prompt in ipairs(receivedItemFrame.prompts or {}) do
+            if tonumber(prompt and prompt.itemId) == itemId then
+                return true
+            end
+        end
+    end
+
+    for _, data in ipairs(receivedItemQueue) do
+        if tonumber(data and data.itemId) == itemId then
+            return true
+        end
+    end
+
+    return false
+end
+
 local function CreateReceivedItemFrame()
     receivedItemFrame = CreateFrame("Frame", "PlutocraseekerReceivedItemFrame", UIParent, Template())
     receivedItemFrame:SetSize(ALERT_FRAME_WIDTH, 240)
@@ -1865,6 +1931,8 @@ local function CreateReceivedItemFrame()
             self.suppressNextPrompt = nil
             return
         end
+        MarkReceivedItemHandled(self.itemId)
+        MarkReceivedItemPromptsHandled(self.prompts)
         if UI.ShowNextReceivedItemPrompt then
             UI.ShowNextReceivedItemPrompt()
         end
@@ -1890,6 +1958,8 @@ local function CreateReceivedItemFrame()
     receivedItemFrame.message:SetWidth(450)
 
     receivedItemFrame.rows = {}
+    receivedItemFrame.itemLabels = {}
+    receivedItemFrame.prompts = {}
 
     receivedItemFrame.keep = CreateButton(receivedItemFrame, "Keep Watching", 112, 30)
     receivedItemFrame.keep:SetPoint("BOTTOMRIGHT", -18, 18)
@@ -1901,10 +1971,9 @@ local function CreateReceivedItemFrame()
     receivedItemFrame.remove:SetPoint("RIGHT", receivedItemFrame.keep, "LEFT", -8, 0)
     receivedItemFrame.remove:SetScript("OnClick", function()
         local removed = 0
-        local itemId = receivedItemFrame.itemId
         for _, row in ipairs(receivedItemFrame.rows or {}) do
-            if row:IsShown() and row.setId and row:GetChecked() then
-                if Plutocraseeker.RemoveItemFromSet and Plutocraseeker.RemoveItemFromSet(row.setId, itemId) then
+            if row:IsShown() and row.itemId and row.setId and row:GetChecked() then
+                if Plutocraseeker.RemoveItemFromSet and Plutocraseeker.RemoveItemFromSet(row.setId, row.itemId) then
                     removed = removed + 1
                 end
             end
@@ -1912,7 +1981,7 @@ local function CreateReceivedItemFrame()
 
         if Plutocraseeker.Print then
             if removed > 0 then
-                Plutocraseeker.Print("Removed " .. tostring(receivedItemFrame.itemName or "item") .. " from " .. tostring(removed) .. " set(s).")
+                Plutocraseeker.Print("Removed watched item entries from " .. tostring(removed) .. " set(s).")
             else
                 Plutocraseeker.Print("No sets were changed.")
             end
@@ -1921,46 +1990,87 @@ local function CreateReceivedItemFrame()
     end)
 end
 
-local function DisplayReceivedItemPrompt(data)
+local function DisplayReceivedItemPrompts(prompts)
     if not receivedItemFrame then
         CreateReceivedItemFrame()
     end
 
-    local itemId = data.itemId
-    local sets = data.sets or {}
-
-    receivedItemFrame.itemId = itemId
-    receivedItemFrame.itemName = data.itemText or Plutocraseeker.GetItemName(itemId)
-    receivedItemFrame.itemText:SetText("Received: " .. tostring(receivedItemFrame.itemName))
-    if #receivedItemQueue > 0 then
-        receivedItemFrame.message:SetText("Check the sets this loot satisfies. " .. tostring(#receivedItemQueue) .. " more received item(s) are waiting.")
-    else
-        receivedItemFrame.message:SetText("Check the sets this loot satisfies. Checked sets will stop watching this item.")
-    end
-
-    local rowStart = -92
-    local rowHeight = 26
-    for index, set in ipairs(sets) do
-        local row = receivedItemFrame.rows[index]
-        if not row then
-            row = CreateCheckbox(receivedItemFrame, "", 440)
-            receivedItemFrame.rows[index] = row
+    prompts = prompts or {}
+    local checkedRows = {}
+    if receivedItemFrame and receivedItemFrame.rows then
+        for _, row in ipairs(receivedItemFrame.rows) do
+            if row:IsShown() and row.itemId and row.setId and row:GetChecked() then
+                checkedRows[tostring(row.itemId) .. ":" .. tostring(row.setId)] = true
+            end
         end
-        row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", 18, rowStart - ((index - 1) * rowHeight))
-        row.text:SetText(tostring(set.name or "Unnamed set"))
-        row.setId = set.id
-        row:SetChecked(false)
-        row:Show()
     end
 
-    for index = #sets + 1, #receivedItemFrame.rows do
+    receivedItemFrame.itemId = nil
+    receivedItemFrame.itemName = nil
+    receivedItemFrame.prompts = prompts
+
+    if #prompts == 1 then
+        receivedItemFrame.itemText:SetText("Received: " .. tostring(prompts[1].itemText or Plutocraseeker.GetItemName(prompts[1].itemId)))
+    else
+        receivedItemFrame.itemText:SetText("Received: " .. tostring(#prompts) .. " watched items")
+    end
+    receivedItemFrame.message:SetText("Check the sets this loot satisfies. Checked sets will stop watching those items.")
+
+    local labelOffset = -92
+    local rowHeight = 26
+    local labelCount = 0
+    local rowCount = 0
+    local y = labelOffset
+    for promptIndex, prompt in ipairs(prompts) do
+        local itemId = tonumber(prompt and prompt.itemId)
+        local sets = prompt and prompt.sets or {}
+        if itemId and #sets > 0 then
+            labelCount = labelCount + 1
+            local label = receivedItemFrame.itemLabels[labelCount]
+            if not label then
+                label = CreateText(receivedItemFrame, "", 12, colors.text)
+                label:SetWidth(450)
+                receivedItemFrame.itemLabels[labelCount] = label
+            end
+            label:SetText(tostring(prompt.itemText or Plutocraseeker.GetItemName(itemId)))
+            label:ClearAllPoints()
+            label:SetPoint("TOPLEFT", 18, y)
+            label:Show()
+            y = y - 22
+
+            for _, set in ipairs(sets) do
+                rowCount = rowCount + 1
+                local row = receivedItemFrame.rows[rowCount]
+                if not row then
+                    row = CreateCheckbox(receivedItemFrame, "", 440)
+                    receivedItemFrame.rows[rowCount] = row
+                end
+                row:ClearAllPoints()
+                row:SetPoint("TOPLEFT", 18, y)
+                row.text:SetText(tostring(set.name or "Unnamed set"))
+                row.itemId = itemId
+                row.setId = set.id
+                row:SetChecked(checkedRows[tostring(itemId) .. ":" .. tostring(set.id)] == true)
+                row:Show()
+                y = y - rowHeight
+            end
+            y = y - 8
+        end
+    end
+
+    for index = labelCount + 1, #receivedItemFrame.itemLabels do
+        receivedItemFrame.itemLabels[index]:Hide()
+    end
+
+    for index = rowCount + 1, #receivedItemFrame.rows do
         local row = receivedItemFrame.rows[index]
+        row.itemId = nil
         row.setId = nil
         row:Hide()
     end
 
-    receivedItemFrame:SetHeight(math.min(190 + (#sets * rowHeight), 460))
+    local contentHeight = math.max(labelOffset - y, 0)
+    receivedItemFrame:SetHeight(math.min(142 + contentHeight, 520))
     if receivedItemFrame.Raise then
         receivedItemFrame:Raise()
     end
@@ -1977,16 +2087,31 @@ function UI.ShowNextReceivedItemPrompt()
         return
     end
 
-    local data = table.remove(receivedItemQueue, 1)
-    if data then
-        DisplayReceivedItemPrompt(data)
+    local prompts = {}
+    while #receivedItemQueue > 0 do
+        local data = table.remove(receivedItemQueue, 1)
+        local itemId = tonumber(data and data.itemId)
+        if itemId and not WasReceivedItemRecentlyHandled(itemId) then
+            data.sets = GetCurrentReceivedItemSets(itemId, data.sets, data.itemText)
+            if #data.sets > 0 then
+                prompts[#prompts + 1] = data
+            end
+        end
+    end
+
+    if #prompts > 0 then
+        DisplayReceivedItemPrompts(prompts)
     end
 end
 
 function UI.ShowReceivedItemPrompt(itemId, itemText, sets)
     itemId = tonumber(itemId)
-    sets = sets or {}
-    if not itemId or #sets == 0 then
+    if not itemId or WasReceivedItemRecentlyHandled(itemId) or IsReceivedItemPromptPending(itemId) then
+        return
+    end
+
+    sets = GetCurrentReceivedItemSets(itemId, sets, itemText)
+    if #sets == 0 then
         return
     end
 
@@ -1996,11 +2121,13 @@ function UI.ShowReceivedItemPrompt(itemId, itemText, sets)
         sets = sets,
     }
 
-    if UI.ShowNextReceivedItemPrompt then
+    if receivedItemFrame and receivedItemFrame:IsShown() then
+        local prompts = receivedItemFrame.prompts or {}
+        prompts[#prompts + 1] = receivedItemQueue[#receivedItemQueue]
+        table.remove(receivedItemQueue, #receivedItemQueue)
+        DisplayReceivedItemPrompts(prompts)
+    elseif UI.ShowNextReceivedItemPrompt then
         UI.ShowNextReceivedItemPrompt()
-    end
-    if receivedItemFrame and receivedItemFrame:IsShown() and receivedItemFrame.message and #receivedItemQueue > 0 then
-        receivedItemFrame.message:SetText("Check the sets this loot satisfies. " .. tostring(#receivedItemQueue) .. " more received item(s) are waiting.")
     end
 end
 
